@@ -198,6 +198,7 @@ export async function initDatabaseSchema() {
       code VARCHAR(50) UNIQUE NOT NULL,
       name VARCHAR(150) NOT NULL,
       type VARCHAR(50) NOT NULL,
+      ownership_type VARCHAR(50) NOT NULL DEFAULT 'SOLE',
       city VARCHAR(100) NOT NULL,
       district VARCHAR(100) NOT NULL,
       street VARCHAR(150) NOT NULL,
@@ -208,21 +209,47 @@ export async function initDatabaseSchema() {
       vacant_units INT NOT NULL DEFAULT 0,
       monthly_expected_rent DECIMAL(18,2) NOT NULL DEFAULT 0.00,
       total_outstanding_rent DECIMAL(18,2) NOT NULL DEFAULT 0.00,
+      total_area_sqm DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+      status VARCHAR(50) NOT NULL DEFAULT 'ACTIVE',
+      description TEXT,
+      notes TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
   `);
+
+  // Ensure missing columns exist in existing properties table
+  await p.query(`
+    ALTER TABLE properties 
+      ADD COLUMN IF NOT EXISTS ownership_type VARCHAR(50) NOT NULL DEFAULT 'SOLE',
+      ADD COLUMN IF NOT EXISTS total_area_sqm DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+      ADD COLUMN IF NOT EXISTS status VARCHAR(50) NOT NULL DEFAULT 'ACTIVE',
+      ADD COLUMN IF NOT EXISTS description TEXT NULL,
+      ADD COLUMN IF NOT EXISTS notes TEXT NULL;
+  `).catch(() => {});
 
   // 3. Buildings
   await p.query(`
     CREATE TABLE IF NOT EXISTS buildings (
       id VARCHAR(50) PRIMARY KEY,
       property_id VARCHAR(50) NOT NULL,
+      code VARCHAR(50),
       name VARCHAR(100) NOT NULL,
       total_floors INT NOT NULL DEFAULT 1,
+      status VARCHAR(50) NOT NULL DEFAULT 'ACTIVE',
+      description TEXT,
+      notes TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       INDEX idx_prop (property_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
   `);
+
+  await p.query(`
+    ALTER TABLE buildings 
+      ADD COLUMN IF NOT EXISTS code VARCHAR(50) NULL,
+      ADD COLUMN IF NOT EXISTS status VARCHAR(50) NOT NULL DEFAULT 'ACTIVE',
+      ADD COLUMN IF NOT EXISTS description TEXT NULL,
+      ADD COLUMN IF NOT EXISTS notes TEXT NULL;
+  `).catch(() => {});
 
   // 4. Units
   await p.query(`
@@ -232,6 +259,8 @@ export async function initDatabaseSchema() {
       building_id VARCHAR(50),
       building_name VARCHAR(100),
       floor_number INT NOT NULL DEFAULT 0,
+      floor_name VARCHAR(100),
+      unit_code VARCHAR(50),
       unit_number VARCHAR(50) NOT NULL,
       type VARCHAR(50) NOT NULL,
       area_sqm DECIMAL(10,2) NOT NULL DEFAULT 0.00,
@@ -239,14 +268,26 @@ export async function initDatabaseSchema() {
       price_per_cycle DECIMAL(18,2) NOT NULL DEFAULT 0.00,
       electricity_meter_number VARCHAR(100),
       water_meter_or_share VARCHAR(150),
+      owner_name VARCHAR(150),
       current_tenant_id VARCHAR(50),
       current_tenant_name VARCHAR(150),
       current_contract_id VARCHAR(50),
+      description TEXT,
+      notes TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       INDEX idx_property (property_id),
       INDEX idx_status (status)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
   `);
+
+  await p.query(`
+    ALTER TABLE units
+      ADD COLUMN IF NOT EXISTS unit_code VARCHAR(50) NULL,
+      ADD COLUMN IF NOT EXISTS floor_name VARCHAR(100) NULL,
+      ADD COLUMN IF NOT EXISTS owner_name VARCHAR(150) NULL,
+      ADD COLUMN IF NOT EXISTS description TEXT NULL,
+      ADD COLUMN IF NOT EXISTS notes TEXT NULL;
+  `).catch(() => {});
 
   // 5. Tenants
   await p.query(`
@@ -257,7 +298,12 @@ export async function initDatabaseSchema() {
       type VARCHAR(50) NOT NULL DEFAULT 'INDIVIDUAL',
       national_id VARCHAR(50) NOT NULL,
       phone VARCHAR(50) NOT NULL,
+      secondary_phone VARCHAR(50),
       email VARCHAR(100),
+      address VARCHAR(255),
+      status VARCHAR(50) NOT NULL DEFAULT 'ACTIVE',
+      commercial_record VARCHAR(100),
+      notes TEXT,
       current_balance DECIMAL(18,2) NOT NULL DEFAULT 0.00,
       rent_balance DECIMAL(18,2) NOT NULL DEFAULT 0.00,
       water_balance DECIMAL(18,2) NOT NULL DEFAULT 0.00,
@@ -265,9 +311,90 @@ export async function initDatabaseSchema() {
       deposit_balance DECIMAL(18,2) NOT NULL DEFAULT 0.00,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       INDEX idx_code (tenant_code),
-      INDEX idx_national (national_id)
+      INDEX idx_national (national_id),
+      INDEX idx_status (status)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
   `);
+
+  await p.query(`
+    ALTER TABLE tenants
+      ADD COLUMN IF NOT EXISTS secondary_phone VARCHAR(50) NULL,
+      ADD COLUMN IF NOT EXISTS address VARCHAR(255) NULL,
+      ADD COLUMN IF NOT EXISTS status VARCHAR(50) NOT NULL DEFAULT 'ACTIVE',
+      ADD COLUMN IF NOT EXISTS commercial_record VARCHAR(100) NULL,
+      ADD COLUMN IF NOT EXISTS notes TEXT NULL;
+  `).catch(() => {});
+
+  // 5.1 Tenant Documents
+  await p.query(`
+    CREATE TABLE IF NOT EXISTS tenant_documents (
+      id VARCHAR(50) PRIMARY KEY,
+      tenant_id VARCHAR(50) NOT NULL,
+      title VARCHAR(150) NOT NULL,
+      doc_type VARCHAR(50) NOT NULL DEFAULT 'ID_CARD',
+      file_name VARCHAR(255) NOT NULL,
+      file_size INT NOT NULL DEFAULT 0,
+      file_url MEDIUMTEXT NOT NULL,
+      uploaded_by VARCHAR(50) NOT NULL DEFAULT 'usr-1',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_doc_tenant (tenant_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+  `);
+
+  // 5.2 Property Owners
+  await p.query(`
+    CREATE TABLE IF NOT EXISTS owners (
+      id VARCHAR(50) PRIMARY KEY,
+      owner_code VARCHAR(50) UNIQUE NOT NULL,
+      name VARCHAR(150) NOT NULL,
+      national_id VARCHAR(50),
+      phone VARCHAR(50) NOT NULL,
+      secondary_phone VARCHAR(50),
+      email VARCHAR(100),
+      address VARCHAR(255),
+      status VARCHAR(50) NOT NULL DEFAULT 'ACTIVE',
+      notes TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_owner_code (owner_code),
+      INDEX idx_owner_status (status)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+  `);
+
+  // Auto-populate owners table from unique property owners if table is empty
+  const [existingOwners]: any = await p.query('SELECT COUNT(*) as count FROM owners');
+  if (Number(existingOwners[0]?.count || 0) === 0) {
+    const [uniquePropOwners]: any = await p.query(`
+      SELECT DISTINCT owner_name, owner_phone 
+      FROM properties 
+      WHERE owner_name IS NOT NULL AND owner_name != ''
+    `);
+    for (let idx = 0; idx < uniquePropOwners.length; idx++) {
+      const o = uniquePropOwners[idx];
+      const ownerId = `own-${String(idx + 1).padStart(3, '0')}`;
+      const ownerCode = `OWN-${String(idx + 1).padStart(3, '0')}`;
+      await p.query(`
+        INSERT IGNORE INTO owners (id, owner_code, name, phone, status, notes)
+        VALUES (?, ?, ?, ?, 'ACTIVE', 'مالك عقارات ومجمعات مسجل في النظام')
+      `, [ownerId, ownerCode, o.owner_name, o.owner_phone || '+967 777 000 000']);
+    }
+  }
+
+  // Auto-seed sample tenant documents if empty
+  const [docCount]: any = await p.query('SELECT COUNT(*) as count FROM tenant_documents');
+  if (Number(docCount[0]?.count || 0) === 0) {
+    const [existingTenants]: any = await p.query('SELECT id, name FROM tenants LIMIT 3');
+    for (const t of existingTenants) {
+      await p.query(`
+        INSERT IGNORE INTO tenant_documents (id, tenant_id, title, doc_type, file_name, file_size, file_url, uploaded_by)
+        VALUES (?, ?, ?, 'ID_CARD', ?, 102400, 'data:application/pdf;base64,JVBERi0xLjQKJcTl8uXrp/Og0MTGCjEgMCBvYmoKPDwKL1R5cGUgL0NhdGFsb2cKL1BhZ2VzIDIgMCBS', 'usr-1')
+      `, [
+        `doc-${t.id}-id`,
+        t.id,
+        `صورة الهوية الوطنية / جواز السفر - ${t.name}`,
+        `بطاقة_هوية_${t.name}.pdf`
+      ]);
+    }
+  }
 
   // 6. Contracts
   await p.query(`
@@ -289,12 +416,22 @@ export async function initDatabaseSchema() {
       guarantee_person_phone VARCHAR(50),
       notice_period_days INT NOT NULL DEFAULT 60,
       status VARCHAR(50) NOT NULL DEFAULT 'ACTIVE',
+      notes TEXT,
+      original_end_date DATE,
+      renewal_count INT NOT NULL DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       INDEX idx_cnt_unit (unit_id),
       INDEX idx_cnt_tenant (tenant_id),
       INDEX idx_cnt_status (status)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
   `);
+
+  await p.query(`
+    ALTER TABLE contracts 
+      ADD COLUMN IF NOT EXISTS notes TEXT NULL,
+      ADD COLUMN IF NOT EXISTS original_end_date DATE NULL,
+      ADD COLUMN IF NOT EXISTS renewal_count INT NOT NULL DEFAULT 0;
+  `).catch(() => {});
 
   // 7. Deposits (Guarantees)
   await p.query(`
@@ -335,6 +472,14 @@ export async function initDatabaseSchema() {
       issue_date DATE NOT NULL,
       due_date DATE NOT NULL,
       status VARCHAR(50) NOT NULL DEFAULT 'UNPAID',
+      base_rent DECIMAL(18,2) NOT NULL DEFAULT 0.00,
+      additional_charges DECIMAL(18,2) NOT NULL DEFAULT 0.00,
+      discount DECIMAL(18,2) NOT NULL DEFAULT 0.00,
+      billing_period_start DATE NULL,
+      billing_period_end DATE NULL,
+      cancelled_by VARCHAR(100) NULL,
+      cancelled_at DATETIME NULL,
+      cancellation_reason TEXT NULL,
       notes TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       INDEX idx_inv_tenant (tenant_id),
@@ -342,6 +487,18 @@ export async function initDatabaseSchema() {
       INDEX idx_inv_acct (account_type)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
   `);
+
+  await p.query(`
+    ALTER TABLE invoices 
+      ADD COLUMN IF NOT EXISTS base_rent DECIMAL(18,2) NOT NULL DEFAULT 0.00,
+      ADD COLUMN IF NOT EXISTS additional_charges DECIMAL(18,2) NOT NULL DEFAULT 0.00,
+      ADD COLUMN IF NOT EXISTS discount DECIMAL(18,2) NOT NULL DEFAULT 0.00,
+      ADD COLUMN IF NOT EXISTS billing_period_start DATE NULL,
+      ADD COLUMN IF NOT EXISTS billing_period_end DATE NULL,
+      ADD COLUMN IF NOT EXISTS cancelled_by VARCHAR(100) NULL,
+      ADD COLUMN IF NOT EXISTS cancelled_at DATETIME NULL,
+      ADD COLUMN IF NOT EXISTS cancellation_reason TEXT NULL;
+  `).catch(() => {});
 
   // 9. Payments & Receipts
   await p.query(`
@@ -387,7 +544,7 @@ export async function initDatabaseSchema() {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
   `);
 
-  // 11. Water Operating Costs
+  // 11. Water Operating Costs & Periods
   await p.query(`
     CREATE TABLE IF NOT EXISTS water_costs (
       id VARCHAR(50) PRIMARY KEY,
@@ -402,12 +559,108 @@ export async function initDatabaseSchema() {
       tank_maintenance_cost DECIMAL(18,2) NOT NULL DEFAULT 0.00,
       cleaning_cost DECIMAL(18,2) NOT NULL DEFAULT 0.00,
       labor_cost DECIMAL(18,2) NOT NULL DEFAULT 0.00,
+      treatment_cost DECIMAL(18,2) NOT NULL DEFAULT 0.00,
       other_fees DECIMAL(18,2) NOT NULL DEFAULT 0.00,
       net_total_operating_cost DECIMAL(18,2) NOT NULL DEFAULT 0.00,
+      total_distributed_amount DECIMAL(18,2) NOT NULL DEFAULT 0.00,
+      difference_amount DECIMAL(18,2) NOT NULL DEFAULT 0.00,
       distribution_method VARCHAR(50) NOT NULL DEFAULT 'EQUAL',
-      status VARCHAR(50) NOT NULL DEFAULT 'CALCULATED',
+      period_year INT NULL,
+      period_start DATE NULL,
+      period_end DATE NULL,
+      status VARCHAR(50) NOT NULL DEFAULT 'DRAFT',
+      notes TEXT NULL,
+      posted_at DATETIME NULL,
+      posted_by VARCHAR(100) NULL,
+      closed_at DATETIME NULL,
+      closed_by VARCHAR(100) NULL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      INDEX idx_wat_prop (property_id)
+      INDEX idx_wat_prop (property_id),
+      INDEX idx_wat_status (status),
+      INDEX idx_wat_period (period_month, period_year)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+  `);
+
+  await p.query(`
+    ALTER TABLE water_costs 
+      ADD COLUMN IF NOT EXISTS period_year INT NULL,
+      ADD COLUMN IF NOT EXISTS period_start DATE NULL,
+      ADD COLUMN IF NOT EXISTS period_end DATE NULL,
+      ADD COLUMN IF NOT EXISTS treatment_cost DECIMAL(18,2) NOT NULL DEFAULT 0.00,
+      ADD COLUMN IF NOT EXISTS total_distributed_amount DECIMAL(18,2) NOT NULL DEFAULT 0.00,
+      ADD COLUMN IF NOT EXISTS difference_amount DECIMAL(18,2) NOT NULL DEFAULT 0.00,
+      ADD COLUMN IF NOT EXISTS notes TEXT NULL,
+      ADD COLUMN IF NOT EXISTS posted_at DATETIME NULL,
+      ADD COLUMN IF NOT EXISTS posted_by VARCHAR(100) NULL,
+      ADD COLUMN IF NOT EXISTS closed_at DATETIME NULL,
+      ADD COLUMN IF NOT EXISTS closed_by VARCHAR(100) NULL;
+  `).catch(() => {});
+
+  // 11.1 Water Tankers - الوايتات
+  await p.query(`
+    CREATE TABLE IF NOT EXISTS water_tankers (
+      id VARCHAR(50) PRIMARY KEY,
+      period_id VARCHAR(50) NOT NULL,
+      property_id VARCHAR(50) NOT NULL,
+      entry_date DATE NOT NULL,
+      tanker_count INT NOT NULL DEFAULT 1,
+      cost_per_tanker DECIMAL(18,2) NOT NULL,
+      total_cost DECIMAL(18,2) NOT NULL,
+      supplier_name VARCHAR(150),
+      tanker_number VARCHAR(50),
+      receipt_number VARCHAR(100),
+      payment_method VARCHAR(50) DEFAULT 'CASH',
+      notes TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_wt_period (period_id),
+      INDEX idx_wt_prop (property_id),
+      INDEX idx_wt_date (entry_date)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+  `);
+
+  // 11.2 Other Water Costs entries (Electricity, Sewer, Maintenance, Cleaning, Labor, Treatment, Other)
+  await p.query(`
+    CREATE TABLE IF NOT EXISTS water_cost_items (
+      id VARCHAR(50) PRIMARY KEY,
+      period_id VARCHAR(50) NOT NULL,
+      property_id VARCHAR(50) NOT NULL,
+      cost_category VARCHAR(50) NOT NULL,
+      amount DECIMAL(18,2) NOT NULL,
+      entry_date DATE NOT NULL,
+      reference_number VARCHAR(100),
+      description VARCHAR(255) NOT NULL,
+      notes TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_wci_period (period_id),
+      INDEX idx_wci_cat (cost_category),
+      INDEX idx_wci_date (entry_date)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+  `);
+
+  // 11.3 Tenant / Unit Water Charges & Distribution
+  await p.query(`
+    CREATE TABLE IF NOT EXISTS water_charges (
+      id VARCHAR(50) PRIMARY KEY,
+      period_id VARCHAR(50) NOT NULL,
+      property_id VARCHAR(50) NOT NULL,
+      unit_id VARCHAR(50) NOT NULL,
+      unit_number VARCHAR(50) NOT NULL,
+      tenant_id VARCHAR(50) NULL,
+      tenant_name VARCHAR(150) NULL,
+      contract_id VARCHAR(50) NULL,
+      distribution_basis VARCHAR(50) NOT NULL DEFAULT 'EQUAL',
+      basis_value DECIMAL(12,2) NOT NULL DEFAULT 1.00,
+      calculated_share DECIMAL(18,2) NOT NULL,
+      final_charge DECIMAL(18,2) NOT NULL,
+      is_occupied BOOLEAN NOT NULL DEFAULT TRUE,
+      status VARCHAR(50) NOT NULL DEFAULT 'PENDING',
+      invoice_id VARCHAR(50) NULL,
+      notes TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_wc_period (period_id),
+      INDEX idx_wc_tenant (tenant_id),
+      INDEX idx_wc_unit (unit_id),
+      INDEX idx_wc_status (status)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
   `);
 

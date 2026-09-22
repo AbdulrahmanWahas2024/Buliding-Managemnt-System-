@@ -34,6 +34,13 @@ export async function seedDatabaseIfEmpty() {
         p.monthlyExpectedRent, p.totalOutstandingRent
       ]
     );
+
+    // Seed default building for property
+    await pool.query(
+      `INSERT IGNORE INTO buildings (id, property_id, code, name, total_floors, status)
+       VALUES (?, ?, ?, ?, 4, 'ACTIVE')`,
+      [`bld-${p.id}`, p.id, `${p.code}-B1`, `المبنى الرئيسي - ${p.name}`]
+    );
   }
 
   // 2. Units
@@ -43,7 +50,7 @@ export async function seedDatabaseIfEmpty() {
       (id, property_id, building_id, building_name, floor_number, unit_number, type, area_sqm, status, price_per_cycle, electricity_meter_number, water_meter_or_share, current_tenant_id, current_tenant_name, current_contract_id) 
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        u.id, u.propertyId, null, u.buildingName, u.floorNumber,
+        u.id, u.propertyId, `bld-${u.propertyId}`, u.buildingName, u.floorNumber,
         u.unitNumber, u.type, u.areaSqm, u.status, u.pricePerCycle,
         u.electricityMeterNumber || null, u.waterMeterOrShare,
         u.currentTenantId || null, u.currentTenantName || null, u.currentContractId || null

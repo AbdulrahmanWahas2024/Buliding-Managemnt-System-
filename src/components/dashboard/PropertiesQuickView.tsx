@@ -16,11 +16,13 @@ import { Property } from '../../types/erp';
 interface PropertiesQuickViewProps {
   properties: Property[];
   onSelectProperty: (property: Property) => void;
+  onManageAll?: () => void;
 }
 
 export const PropertiesQuickView: React.FC<PropertiesQuickViewProps> = ({
   properties,
   onSelectProperty,
+  onManageAll
 }) => {
   const [filterType, setFilterType] = useState<string>('ALL');
 
@@ -97,6 +99,16 @@ export const PropertiesQuickView: React.FC<PropertiesQuickViewProps> = ({
           >
             أسواق وبسطات
           </button>
+
+          {onManageAll && (
+            <button
+              onClick={onManageAll}
+              className="text-xs px-2.5 py-1 rounded-md bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 transition-colors font-bold whitespace-nowrap flex items-center gap-1 cursor-pointer"
+            >
+              <span>إدارة العقارات والمباني</span>
+              <ArrowUpRight className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
       </div>
 

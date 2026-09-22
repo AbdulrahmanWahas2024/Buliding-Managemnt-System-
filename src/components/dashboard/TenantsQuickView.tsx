@@ -17,12 +17,14 @@ interface TenantsQuickViewProps {
   tenants: Tenant[];
   onCollect: (tenant: Tenant) => void;
   onViewStatement: (tenant: Tenant) => void;
+  onManageAll?: () => void;
 }
 
 export const TenantsQuickView: React.FC<TenantsQuickViewProps> = ({
   tenants,
   onCollect,
   onViewStatement,
+  onManageAll,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'DUE' | 'PAID'>('ALL');
@@ -90,6 +92,16 @@ export const TenantsQuickView: React.FC<TenantsQuickViewProps> = ({
               مسددون بالكامل
             </button>
           </div>
+
+          {onManageAll && (
+            <button
+              onClick={onManageAll}
+              className="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-xs font-bold rounded-lg border border-emerald-200 transition-colors cursor-pointer flex items-center gap-1"
+            >
+              <span>إدارة المستأجرين والملاك</span>
+              <span>←</span>
+            </button>
+          )}
         </div>
       </div>
 
