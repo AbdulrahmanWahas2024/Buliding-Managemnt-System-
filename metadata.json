@@ -1,0 +1,6 @@
+{
+  "name": "Smart Property ERP",
+  "description": "نظام احترافي متكامل لإدارة العقارات، الوحدات، المستأجرين، العقود، فواتير الإيجار والمياه والكهرباء، والتحصيل المحاسبي",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
