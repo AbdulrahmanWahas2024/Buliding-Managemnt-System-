@@ -19,6 +19,7 @@ import {
   WaterCostCategory,
   ElectricityReading
 } from '../types/erp';
+import { CURRENT_USER } from '../data/initialData';
 
 const API_BASE = '/api';
 
@@ -757,9 +758,9 @@ export const ERP_API = {
       method: 'DELETE',
       headers: {
         'Content-Type': 'application/json',
-        'x-user-role': 'SUPER_ADMIN',
-        'x-user-id': 'usr-001',
-        'x-user-name': 'م. أحمد الوهاس'
+        'x-user-role': CURRENT_USER.role,
+        'x-user-id': CURRENT_USER.id,
+        'x-user-name': CURRENT_USER.name
       }
     });
     if (!res.ok) {
@@ -874,7 +875,12 @@ export const ERP_API = {
   }> {
     const res = await fetch(`${API_BASE}/water/periods/${periodId}/post`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-user-role': CURRENT_USER.role,
+        'x-user-id': CURRENT_USER.id,
+        'x-user-name': CURRENT_USER.name
+      },
       body: JSON.stringify(data || {})
     });
     if (!res.ok) {
@@ -884,10 +890,15 @@ export const ERP_API = {
     return await res.json();
   },
 
-  async cancelWaterPeriod(periodId: string, data?: { reason?: string }): Promise<{ message: string }> {
+  async cancelWaterPeriod(periodId: string, data?: { reason?: string }): Promise<{ message: string; periodId?: string; status?: string }> {
     const res = await fetch(`${API_BASE}/water/periods/${periodId}/cancel`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-user-role': CURRENT_USER.role,
+        'x-user-id': CURRENT_USER.id,
+        'x-user-name': CURRENT_USER.name
+      },
       body: JSON.stringify(data || {})
     });
     if (!res.ok) {
@@ -905,6 +916,82 @@ export const ERP_API = {
     const url = params.toString() ? `${API_BASE}/water/reports?${params.toString()}` : `${API_BASE}/water/reports`;
     const res = await fetch(url);
     if (!res.ok) throw new Error('فشل جلب تقارير المياه من MySQL');
+    return await res.json();
+  },
+
+  async getDetailedWaterReport(filters?: {
+    reportType?: string;
+    date?: string;
+    month?: string;
+    year?: number;
+    startDate?: string;
+    endDate?: string;
+    propertyId?: string;
+    buildingId?: string;
+    unitId?: string;
+    tenantId?: string;
+    status?: string;
+    distributionMethod?: string;
+    search?: string;
+  }): Promise<{
+    reportType: string;
+    filters: any;
+    generatedAt: string;
+    summary: {
+      totalPeriodsCount: number;
+      totalTankersCount: number;
+      totalTankersCost: number;
+      totalPumpElectricityCost: number;
+      totalSewerCost: number;
+      totalMaintenanceCost: number;
+      totalCleaningCost: number;
+      totalLaborCost: number;
+      totalOtherCost: number;
+      netTotalWaterCost: number;
+      totalDistributedAmount: number;
+      totalPostedAmount: number;
+      totalDifferenceAmount: number;
+      participatingUnitsCount: number;
+      participatingTenantsCount: number;
+    };
+    monthlyBreakdown: Array<{
+      monthIndex: number;
+      monthName: string;
+      periodsCount: number;
+      tankerCount: number;
+      tankerCost: number;
+      operatingCost: number;
+      totalCost: number;
+      distributedAmount: number;
+      postedAmount: number;
+      status: string;
+    }>;
+    periods: any[];
+    tankers: any[];
+    expenses: any[];
+    charges: any[];
+  }> {
+    const params = new URLSearchParams();
+    if (filters?.reportType) params.append('reportType', filters.reportType);
+    if (filters?.date) params.append('date', filters.date);
+    if (filters?.month) params.append('month', filters.month);
+    if (filters?.year) params.append('year', String(filters.year));
+    if (filters?.startDate) params.append('startDate', filters.startDate);
+    if (filters?.endDate) params.append('endDate', filters.endDate);
+    if (filters?.propertyId && filters.propertyId !== 'ALL') params.append('propertyId', filters.propertyId);
+    if (filters?.buildingId && filters.buildingId !== 'ALL') params.append('buildingId', filters.buildingId);
+    if (filters?.unitId && filters.unitId !== 'ALL') params.append('unitId', filters.unitId);
+    if (filters?.tenantId && filters.tenantId !== 'ALL') params.append('tenantId', filters.tenantId);
+    if (filters?.status && filters.status !== 'ALL') params.append('status', filters.status);
+    if (filters?.distributionMethod && filters.distributionMethod !== 'ALL') params.append('distributionMethod', filters.distributionMethod);
+    if (filters?.search) params.append('search', filters.search);
+
+    const url = `${API_BASE}/water/reports/detailed?${params.toString()}`;
+    const res = await fetch(url);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'فشل استخراج تقرير المياه التفصيلي' }));
+      throw new Error(err.error || 'تعذر تحميل التقرير من قاعدة البيانات');
+    }
     return await res.json();
   },
 

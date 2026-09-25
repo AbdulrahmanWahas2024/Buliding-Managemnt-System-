@@ -28,6 +28,7 @@ import {
   WaterCostCategory
 } from '../../../types/erp';
 import { ERP_API } from '../../../services/api';
+import { CURRENT_USER } from '../../../data/initialData';
 import { WaterReportPrintModal } from './WaterReportPrintModal';
 
 interface WaterPeriodDetailsModalProps {
@@ -50,6 +51,17 @@ export const WaterPeriodDetailsModal: React.FC<WaterPeriodDetailsModalProps> = (
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+
+  // RBAC checks
+  const canManagePeriods = CURRENT_USER.role === 'SUPER_ADMIN' || CURRENT_USER.role === 'PROPERTY_MANAGER' || CURRENT_USER.role === 'ACCOUNTANT';
+  const canDeletePeriods = CURRENT_USER.role === 'SUPER_ADMIN' || CURRENT_USER.role === 'PROPERTY_MANAGER';
+
+  // Action Modals State
+  const [showPostConfirmModal, setShowPostConfirmModal] = useState(false);
+  const [showCancelModal, setShowCancelModal] = useState(false);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [cancelReason, setCancelReason] = useState('');
+  const [itemToDelete, setItemToDelete] = useState<{ type: 'tanker' | 'costItem'; id: string; label: string } | null>(null);
 
   // Period full details
   const [period, setPeriod] = useState<WaterCostPeriod | null>(null);

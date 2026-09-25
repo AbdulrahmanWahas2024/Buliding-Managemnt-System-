@@ -1,5 +1,5 @@
 import mysql from 'mysql2/promise';
-import { exec, execSync } from 'child_process';
+import { exec, execSync, spawn } from 'child_process';
 import net from 'net';
 import fs from 'fs';
 import dotenv from 'dotenv';
@@ -50,28 +50,41 @@ export async function ensureMySQLRunning(): Promise<boolean> {
     return false;
   }
 
-  console.log('Starting MySQL daemon in container...');
+  console.log('Ensuring MariaDB/MySQL is installed and daemon running in container...');
   try {
+    // If neither mariadbd nor mysqld binary exists, install mariadb-server
+    const hasBinary = fs.existsSync('/usr/sbin/mariadbd') || fs.existsSync('/usr/sbin/mysqld');
+    if (!hasBinary) {
+      console.log('Installing MariaDB packages via apt-get...');
+      execSync('DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y mariadb-server mariadb-client');
+    }
+
     execSync('mkdir -p /run/mysqld /var/lib/mysql && chown -R mysql:mysql /run/mysqld /var/lib/mysql 2>/dev/null || true');
     // Ensure initial system tables exist
-    execSync('[ ! -d /var/lib/mysql/mysql ] && mysql_install_db --user=mysql --datadir=/var/lib/mysql 2>/dev/null || true');
-    // Start daemon in background
-    exec('/usr/sbin/mysqld --user=mysql --bind-address=127.0.0.1 --port=3306 2>/dev/null &');
+    execSync('[ ! -d /var/lib/mysql/mysql ] && (mariadb-install-db --user=mysql --datadir=/var/lib/mysql 2>/dev/null || mysql_install_db --user=mysql --datadir=/var/lib/mysql 2>/dev/null || true)');
+    
+    // Start daemon in background as detached process
+    const binary = fs.existsSync('/usr/sbin/mariadbd') ? '/usr/sbin/mariadbd' : '/usr/sbin/mysqld';
+    const child = spawn(binary, ['--user=mysql', '--bind-address=0.0.0.0', '--port=3306'], {
+      detached: true,
+      stdio: 'ignore'
+    });
+    child.unref();
 
-    // Wait up to 8 seconds for port to open
-    for (let i = 0; i < 32; i++) {
+    // Wait up to 10 seconds for port to open
+    for (let i = 0; i < 40; i++) {
       await new Promise((r) => setTimeout(r, 250));
       if (await isPortOpen(DB_PORT, DB_HOST)) {
-        console.log('MySQL daemon successfully started and accepting connections.');
+        console.log('MySQL/MariaDB daemon successfully started and accepting connections.');
         provisionLocalUsers();
         return true;
       }
     }
   } catch (err: any) {
-    console.error('Failed to spawn MySQL daemon:', err.message);
+    console.error('Failed to spawn MySQL/MariaDB daemon:', err.message);
   }
 
-  console.warn('MySQL start attempt completed, checking status...');
+  console.warn('MySQL/MariaDB start attempt completed, checking status...');
   const finalCheck = await isPortOpen(DB_PORT, DB_HOST);
   if (finalCheck) {
     provisionLocalUsers();
@@ -82,29 +95,28 @@ export async function ensureMySQLRunning(): Promise<boolean> {
 function provisionLocalUsers() {
   if (DB_HOST === '127.0.0.1' || DB_HOST === 'localhost') {
     try {
-      const pass = DB_PASSWORD || '';
-      const passClause = pass ? `USING PASSWORD('${pass}')` : `USING PASSWORD('')`;
-      const passClauseAlt = pass ? `IDENTIFIED BY '${pass}'` : `IDENTIFIED BY ''`;
+      const pass = DB_PASSWORD || '123456';
       
       const sqlCommands = [
-        `ALTER USER 'root'@'localhost' IDENTIFIED VIA mysql_native_password ${passClause};`,
-        `GRANT ALL PRIVILEGES ON *.* TO 'root'@'localhost' WITH GRANT OPTION;`,
-        `CREATE USER IF NOT EXISTS 'root'@'127.0.0.1' ${passClauseAlt};`,
-        `ALTER USER 'root'@'127.0.0.1' IDENTIFIED VIA mysql_native_password ${passClause};`,
-        `GRANT ALL PRIVILEGES ON *.* TO 'root'@'127.0.0.1' WITH GRANT OPTION;`,
-        `CREATE USER IF NOT EXISTS 'root'@'%' ${passClauseAlt};`,
-        `ALTER USER 'root'@'%' IDENTIFIED VIA mysql_native_password ${passClause};`,
-        `GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION;`,
+        `FLUSH PRIVILEGES;`,
         `CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;`,
         `CREATE DATABASE IF NOT EXISTS \`smart_property_erp\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;`,
+        `ALTER USER 'root'@'localhost' IDENTIFIED BY '${pass}';`,
+        `GRANT ALL PRIVILEGES ON *.* TO 'root'@'localhost' WITH GRANT OPTION;`,
+        `CREATE USER IF NOT EXISTS 'root'@'127.0.0.1' IDENTIFIED BY '${pass}';`,
+        `ALTER USER 'root'@'127.0.0.1' IDENTIFIED BY '${pass}';`,
+        `GRANT ALL PRIVILEGES ON *.* TO 'root'@'127.0.0.1' WITH GRANT OPTION;`,
+        `CREATE USER IF NOT EXISTS 'root'@'%' IDENTIFIED BY '${pass}';`,
+        `ALTER USER 'root'@'%' IDENTIFIED BY '${pass}';`,
+        `GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION;`,
         `FLUSH PRIVILEGES;`
       ].join('\n');
 
       const tmpSqlPath = '/tmp/provision_mysql_users.sql';
       fs.writeFileSync(tmpSqlPath, sqlCommands, 'utf8');
       
-      // Execute via file redirect to avoid shell substitution issues
-      execSync(`mariadb < ${tmpSqlPath} 2>/dev/null || mariadb -u root -p'${pass}' < ${tmpSqlPath} 2>/dev/null || true`);
+      // Execute via file redirect
+      execSync(`mariadb -u root -p'${pass}' < ${tmpSqlPath} 2>/dev/null || mariadb < ${tmpSqlPath} 2>/dev/null || mysql -u root -p'${pass}' < ${tmpSqlPath} 2>/dev/null || mysql < ${tmpSqlPath} 2>/dev/null || true`);
       try { fs.unlinkSync(tmpSqlPath); } catch {}
     } catch {
       // Ignore if provision command fails
@@ -664,41 +676,181 @@ export async function initDatabaseSchema() {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
   `);
 
-  // 12. Electricity Rates History
+  // 12. Electricity Meters
+  await p.query(`
+    CREATE TABLE IF NOT EXISTS electricity_meters (
+      id VARCHAR(50) PRIMARY KEY,
+      meter_number VARCHAR(100) UNIQUE NOT NULL,
+      property_id VARCHAR(50) NOT NULL,
+      building_id VARCHAR(50),
+      unit_id VARCHAR(50),
+      meter_type VARCHAR(50) NOT NULL DEFAULT 'DIGITAL',
+      status VARCHAR(50) NOT NULL DEFAULT 'ACTIVE',
+      installation_date DATE,
+      initial_reading DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+      current_reading DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+      previous_reading DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+      multiplier DECIMAL(8,4) NOT NULL DEFAULT 1.0000,
+      location_notes VARCHAR(255),
+      notes TEXT,
+      created_by VARCHAR(100),
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      INDEX idx_em_prop (property_id),
+      INDEX idx_em_building (building_id),
+      INDEX idx_em_unit (unit_id),
+      INDEX idx_em_status (status)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+  `);
+
+  // 13. Meter Replacements History
+  await p.query(`
+    CREATE TABLE IF NOT EXISTS meter_replacements (
+      id VARCHAR(50) PRIMARY KEY,
+      old_meter_id VARCHAR(50) NOT NULL,
+      old_meter_number VARCHAR(100) NOT NULL,
+      new_meter_id VARCHAR(50) NOT NULL,
+      new_meter_number VARCHAR(100) NOT NULL,
+      unit_id VARCHAR(50) NOT NULL,
+      final_reading_old DECIMAL(12,2) NOT NULL,
+      initial_reading_new DECIMAL(12,2) NOT NULL,
+      replacement_date DATE NOT NULL,
+      reason VARCHAR(255) NOT NULL,
+      replaced_by VARCHAR(100) NOT NULL,
+      notes TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_mr_unit (unit_id),
+      INDEX idx_mr_old (old_meter_id),
+      INDEX idx_mr_new (new_meter_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+  `);
+
+  // 14. Electricity Rates History (Tariffs)
   await p.query(`
     CREATE TABLE IF NOT EXISTS electricity_rates (
       id VARCHAR(50) PRIMARY KEY,
+      tariff_name VARCHAR(100) NOT NULL DEFAULT 'تعرفة استهلاك الكهرباء',
       property_id VARCHAR(50) NOT NULL,
       rate_per_kwh DECIMAL(18,2) NOT NULL,
       effective_from DATE NOT NULL,
       effective_to DATE,
+      status VARCHAR(50) NOT NULL DEFAULT 'ACTIVE',
       notes VARCHAR(255),
+      created_by VARCHAR(100),
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      INDEX idx_rate_prop (property_id)
+      INDEX idx_rate_prop (property_id),
+      INDEX idx_rate_status (status)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
   `);
 
-  // 13. Electricity Meter Readings
+  // Ensure missing columns in electricity_rates
+  await p.query(`
+    ALTER TABLE electricity_rates
+      ADD COLUMN IF NOT EXISTS tariff_name VARCHAR(100) NOT NULL DEFAULT 'تعرفة استهلاك الكهرباء',
+      ADD COLUMN IF NOT EXISTS status VARCHAR(50) NOT NULL DEFAULT 'ACTIVE',
+      ADD COLUMN IF NOT EXISTS created_by VARCHAR(100) NULL;
+  `).catch(() => {});
+
+  // 15. Electricity Meter Readings
   await p.query(`
     CREATE TABLE IF NOT EXISTS electricity_readings (
       id VARCHAR(50) PRIMARY KEY,
+      meter_id VARCHAR(50),
       unit_id VARCHAR(50) NOT NULL,
       unit_number VARCHAR(50) NOT NULL,
+      property_id VARCHAR(50),
+      building_id VARCHAR(50),
+      tenant_id VARCHAR(50),
+      tenant_name VARCHAR(100),
+      contract_id VARCHAR(50),
       meter_number VARCHAR(100) NOT NULL,
       reading_period_month VARCHAR(20) NOT NULL,
+      billing_period_start DATE,
+      billing_period_end DATE,
       previous_reading DECIMAL(12,2) NOT NULL,
       current_reading DECIMAL(12,2) NOT NULL,
       consumption_kwh DECIMAL(12,2) NOT NULL,
+      multiplier DECIMAL(8,4) NOT NULL DEFAULT 1.0000,
       rate_per_kwh DECIMAL(18,2) NOT NULL,
+      tariff_id VARCHAR(50),
+      tariff_name VARCHAR(100),
       total_amount DECIMAL(18,2) NOT NULL,
       reading_date DATE NOT NULL,
       is_reset_or_replacement BOOLEAN NOT NULL DEFAULT FALSE,
       reset_reason VARCHAR(255),
       status VARCHAR(50) NOT NULL DEFAULT 'UNBILLED',
+      invoice_id VARCHAR(50),
+      invoice_number VARCHAR(100),
+      recorded_by VARCHAR(100),
+      posted_at DATETIME,
+      posted_by VARCHAR(100),
+      notes TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      INDEX idx_meter_unit (unit_id)
+      INDEX idx_meter_unit (unit_id),
+      INDEX idx_meter_id (meter_id),
+      INDEX idx_reading_status (status),
+      INDEX idx_reading_period (reading_period_month)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
   `);
+
+  // Ensure missing columns in electricity_readings
+  await p.query(`
+    ALTER TABLE electricity_readings
+      ADD COLUMN IF NOT EXISTS meter_id VARCHAR(50) NULL,
+      ADD COLUMN IF NOT EXISTS property_id VARCHAR(50) NULL,
+      ADD COLUMN IF NOT EXISTS building_id VARCHAR(50) NULL,
+      ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(50) NULL,
+      ADD COLUMN IF NOT EXISTS tenant_name VARCHAR(100) NULL,
+      ADD COLUMN IF NOT EXISTS contract_id VARCHAR(50) NULL,
+      ADD COLUMN IF NOT EXISTS billing_period_start DATE NULL,
+      ADD COLUMN IF NOT EXISTS billing_period_end DATE NULL,
+      ADD COLUMN IF NOT EXISTS multiplier DECIMAL(8,4) NOT NULL DEFAULT 1.0000,
+      ADD COLUMN IF NOT EXISTS tariff_id VARCHAR(50) NULL,
+      ADD COLUMN IF NOT EXISTS tariff_name VARCHAR(100) NULL,
+      ADD COLUMN IF NOT EXISTS invoice_id VARCHAR(50) NULL,
+      ADD COLUMN IF NOT EXISTS invoice_number VARCHAR(100) NULL,
+      ADD COLUMN IF NOT EXISTS recorded_by VARCHAR(100) NULL,
+      ADD COLUMN IF NOT EXISTS posted_at DATETIME NULL,
+      ADD COLUMN IF NOT EXISTS posted_by VARCHAR(100) NULL,
+      ADD COLUMN IF NOT EXISTS notes TEXT NULL;
+  `).catch(() => {});
+
+  // Seed default electricity tariffs if table is empty
+  const [rateCountRows]: any = await p.query('SELECT COUNT(*) as cnt FROM electricity_rates').catch(() => [[{ cnt: 0 }]]);
+  if (!rateCountRows || Number(rateCountRows[0]?.cnt || 0) === 0) {
+    await p.query(`
+      INSERT INTO electricity_rates (id, tariff_name, property_id, rate_per_kwh, effective_from, effective_to, status, notes, created_by)
+      VALUES 
+      ('trf-01', 'التعرفة السكنية الموحدة', 'ALL', 300.00, '2026-01-01', NULL, 'ACTIVE', 'التعرفة العامة المعتمدة لكافة العقارات والوحدات السكنية', 'م. أحمد الوهاس'),
+      ('trf-02', 'التعرفة التجارية والاستثمارية', 'prop-01', 350.00, '2026-01-01', NULL, 'ACTIVE', 'تعرفة المحلات والمعارض التجارية في برج السلام', 'م. أحمد الوهاس')
+    `).catch(() => {});
+  }
+
+  // Populate initial electricity_meters from existing units if empty
+  const [meterCountRows]: any = await p.query('SELECT COUNT(*) as cnt FROM electricity_meters').catch(() => [[{ cnt: 0 }]]);
+  if (!meterCountRows || Number(meterCountRows[0]?.cnt || 0) === 0) {
+    await p.query(`
+      INSERT IGNORE INTO electricity_meters 
+      (id, meter_number, property_id, building_id, unit_id, meter_type, status, installation_date, initial_reading, current_reading, previous_reading, multiplier, notes, created_by)
+      SELECT 
+        CONCAT('mtr-', SUBSTRING(MD5(id), 1, 8)),
+        electricity_meter_number,
+        property_id,
+        building_id,
+        id,
+        'DIGITAL',
+        'ACTIVE',
+        '2026-01-01',
+        1000.00,
+        1250.00,
+        1000.00,
+        1.0000,
+        CONCAT('عداد كهربائي رئيسي للوحدة رقم ', unit_number),
+        'م. أحمد الوهاس'
+      FROM units 
+      WHERE electricity_meter_number IS NOT NULL AND electricity_meter_number != '';
+    `).catch(() => {});
+  }
 
   // 14. Audit Logs
   await p.query(`

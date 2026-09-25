@@ -3907,7 +3907,7 @@ router.put('/water/periods/:id', async (req: Request, res: Response) => {
   }
 });
 
-// Delete Water Period (Draft/Cancelled only, with RBAC authorization)
+// Delete Water Period (Draft/Calculated/Cancelled only, with RBAC authorization)
 router.delete('/water/periods/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
@@ -3921,42 +3921,61 @@ router.delete('/water/periods/:id', async (req: Request, res: Response) => {
       return res.status(403).json({ error: 'غير مصرح: حذف دورات التكاليف مقتصر على مدير النظام أو إدارة الأملاك' });
     }
 
-    const pool = await getPool();
+    const result = await executeTransaction(async (conn) => {
+      // 1. Check period with lock
+      const [periodRows]: any = await conn.query('SELECT * FROM water_costs WHERE id = ? FOR UPDATE', [id]);
+      if (periodRows.length === 0) {
+        throw new Error('دورة تكاليف المياه غير موجودة');
+      }
 
-    // Check status
-    const [periodRows]: any = await pool.query('SELECT * FROM water_costs WHERE id = ?', [id]);
-    if (periodRows.length === 0) {
-      return res.status(404).json({ error: 'دورة تكاليف المياه غير موجودة' });
-    }
+      const period = periodRows[0];
+      if (period.status === 'POSTED' || period.status === 'CLOSED') {
+        throw new Error('لا يمكن حذف دورة تكاليف مياه مرحلة أو مغلقة محاسبياً لحماية دفاتر الذمم والحسابات المالية');
+      }
 
-    const period = periodRows[0];
-    if (period.status === 'POSTED' || period.status === 'CLOSED') {
-      return res.status(400).json({ 
-        error: 'لا يمكن حذف دورة تكاليف مياه مرحلة أو مغلقة محاسبياً لحماية دفاتر الذمم والحسابات المالية' 
-      });
-    }
+      // 2. Check if any invoices are linked to this period
+      const [invRows]: any = await conn.query(
+        'SELECT COUNT(*) as count FROM invoices WHERE account_type = "WATER" AND period_month = ? AND property_id = ?',
+        [period.period_month, period.property_id]
+      );
+      if (Number(invRows[0]?.count || 0) > 0) {
+        throw new Error('لا يمكن حذف دورة المياه لوجود قيود ذمم وفواتير مسجلة مرتبطة بها.');
+      }
 
-    // Delete child records in order
-    await pool.query('DELETE FROM water_charges WHERE period_id = ?', [id]);
-    await pool.query('DELETE FROM water_cost_items WHERE period_id = ?', [id]);
-    await pool.query('DELETE FROM water_tankers WHERE period_id = ?', [id]);
-    await pool.query('DELETE FROM water_costs WHERE id = ?', [id]);
+      // 3. Delete child records atomically
+      await conn.query('DELETE FROM water_charges WHERE period_id = ?', [id]);
+      await conn.query('DELETE FROM water_cost_items WHERE period_id = ?', [id]);
+      await conn.query('DELETE FROM water_tankers WHERE period_id = ?', [id]);
+      await conn.query('DELETE FROM water_costs WHERE id = ?', [id]);
 
-    // Record audit log
-    await pool.query(`
-      INSERT INTO audit_logs (id, user_id, user_name, action, entity, entity_id, details)
-      VALUES (?, ?, ?, 'DELETE_WATER_PERIOD', 'water_costs', ?, ?)
-    `, [
-      `aud-${Date.now()}`,
-      userId,
-      userName,
-      id,
-      `حذف دورة تكاليف المياه (${period.period_month} ${period.period_year || ''}) للعقار ${period.property_name}`
-    ]);
+      // 4. Record audit log
+      await conn.query(`
+        INSERT INTO audit_logs (id, user_id, user_name, action, entity, entity_id, details)
+        VALUES (?, ?, ?, 'DELETE_WATER_PERIOD', 'water_costs', ?, ?)
+      `, [
+        `aud-${Date.now()}`,
+        userId,
+        userName,
+        id,
+        JSON.stringify({
+          periodMonth: period.period_month,
+          periodYear: period.period_year,
+          propertyId: period.property_id,
+          propertyName: period.property_name,
+          deletedBy: userName,
+          role: userRole
+        })
+      ]);
 
-    res.json({ success: true, message: 'تم حذف دورة تكاليف المياه بنجاح' });
+      return {
+        success: true,
+        message: `تم حذف دورة تكاليف المياه (${period.period_month}) للعقار ${period.property_name} بنجاح`
+      };
+    });
+
+    res.json(result);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(400).json({ error: err.message });
   }
 });
 
@@ -4498,10 +4517,19 @@ router.post('/water/periods/:id/calculate', async (req: Request, res: Response) 
 router.post('/water/periods/:id/post', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { postedBy = 'م. أحمد الوهاس', notes } = req.body;
+    const userRole = (req.headers['x-user-role'] as string) || (req.body?.userRole as string) || 'SUPER_ADMIN';
+    const userId = (req.headers['x-user-id'] as string) || (req.body?.userId as string) || 'usr-1';
+    const userName = (req.headers['x-user-name'] as string) || (req.body?.userName as string) || 'م. أحمد الوهاس';
+    const { postedBy = userName, notes } = req.body;
+
+    // Verify permission: Only System Administrator, Property Manager, or Accountant can post to ledger
+    const allowedRoles = ['SUPER_ADMIN', 'PROPERTY_MANAGER', 'ACCOUNTANT'];
+    if (!allowedRoles.includes(userRole)) {
+      return res.status(403).json({ error: 'غير مصرح: ترحيل تكاليف المياه إلى الذمم مقتصر على مدير النظام، مدير الأملاك، أو المحاسب' });
+    }
 
     const result = await executeTransaction(async (conn) => {
-      // 1. Validate period
+      // 1. Validate period with exclusive lock
       const [pRows]: any = await conn.query('SELECT * FROM water_costs WHERE id = ? FOR UPDATE', [id]);
       if (pRows.length === 0) {
         throw new Error('دورة تكاليف المياه غير موجودة');
@@ -4509,19 +4537,19 @@ router.post('/water/periods/:id/post', async (req: Request, res: Response) => {
 
       const period = pRows[0];
       if (period.status === 'POSTED') {
-        throw new Error('هذه الدورة مرحلة مسبقاً إلى دفاتر الذمم');
+        throw new Error('هذه الدورة مرحلة مسبقاً إلى دفاتر الذمم ولا يمكن ترحيلها مرة أخرى');
       }
       if (period.status === 'CLOSED') {
-        throw new Error('هذه الدورة مغلقة');
+        throw new Error('هذه الدورة مغلقة محاسبياً');
       }
       if (period.status === 'CANCELLED') {
         throw new Error('هذه الدورة ملغاة ولا يمكن ترحيلها');
       }
 
-      // 2. Fetch charges
+      // 2. Fetch charges with lock
       const [charges]: any = await conn.query('SELECT * FROM water_charges WHERE period_id = ? FOR UPDATE', [id]);
       if (charges.length === 0) {
-        throw new Error('لا توجد مبالغ موزعة للترحيل. يرجى احتساب التوزيع أولاً');
+        throw new Error('لا توجد مبالغ موزعة للترحيل. يرجى احتساب توزيع تكاليف الدورة أولاً');
       }
 
       const totalDistributed = Number(period.total_distributed_amount || 0);
@@ -4530,53 +4558,95 @@ router.post('/water/periods/:id/post', async (req: Request, res: Response) => {
       let postedTenantCount = 0;
       let postedTotalAmount = 0;
       const postingDate = formatSqlDate(period.period_end) || new Date().toISOString().split('T')[0];
+      const now = new Date();
+      const datePart = now.toISOString().slice(0, 10).replace(/-/g, '').slice(2);
 
-      // 3. Post each charge to tenant ledger and update tenant balance
+      // 3. Post each charge to tenant invoices and tenant ledger
       for (const charge of charges) {
         const chargeAmount = Number(charge.final_charge || 0);
         if (chargeAmount <= 0) continue;
 
         if (charge.tenant_id) {
           // Fetch current tenant balance with lock
-          const [tRows]: any = await conn.query('SELECT id, current_balance, water_balance FROM tenants WHERE id = ? FOR UPDATE', [charge.tenant_id]);
+          const [tRows]: any = await conn.query('SELECT id, name, current_balance, water_balance FROM tenants WHERE id = ? FOR UPDATE', [charge.tenant_id]);
           if (tRows.length > 0) {
             const currentBal = Number(tRows[0].current_balance || 0);
             const waterBal = Number(tRows[0].water_balance || 0);
             const newBal = currentBal + chargeAmount;
             const newWaterBal = waterBal + chargeAmount;
 
+            const randomPart = Math.floor(1000 + Math.random() * 9000);
+            const invoiceNumber = `INV-WAT-${datePart}-${randomPart}`;
+            const invoiceId = `inv-wat-${period.id}-${charge.id}`;
             const ledgerId = `ledg-wat-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-            const desc = `رسوم مياه وايتات عن فترة ${period.period_month} - وحدة ${charge.unit_number}`;
+            const desc = `رسوم مياه وايتات عن فترة ${period.period_month} - وحدة ${charge.unit_number} (${period.property_name})`;
 
-            // Insert into tenant_ledger
+            // A. Create receivable record in invoices table
+            await conn.query(`
+              INSERT INTO invoices 
+              (id, invoice_number, tenant_id, tenant_name, contract_id, property_id, property_name, unit_id, unit_number, account_type, period_month, base_rent, additional_charges, discount, total_amount, paid_amount, remaining_amount, issue_date, due_date, billing_period_start, billing_period_end, status, notes)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'WATER', ?, 0.00, ?, 0.00, ?, 0.00, ?, ?, ?, ?, ?, 'UNPAID', ?)
+            `, [
+              invoiceId,
+              invoiceNumber,
+              charge.tenant_id,
+              tRows[0].name || charge.tenant_name || '',
+              charge.contract_id || null,
+              period.property_id,
+              period.property_name,
+              charge.unit_id,
+              charge.unit_number,
+              period.period_month,
+              chargeAmount,
+              chargeAmount,
+              chargeAmount,
+              postingDate,
+              postingDate,
+              formatSqlDate(period.period_start) || postingDate,
+              formatSqlDate(period.period_end) || postingDate,
+              desc
+            ]);
+
+            // B. Insert Debit entry into tenant_ledger
             await conn.query(`
               INSERT INTO tenant_ledger 
               (id, tenant_id, date, reference, account_type, debit, credit, balance_after, description, user_id)
-              VALUES (?, ?, ?, ?, 'WATER', ?, 0.00, ?, ?, 'usr-1')
+              VALUES (?, ?, ?, ?, 'WATER', ?, 0.00, ?, ?, ?)
             `, [
               ledgerId,
               charge.tenant_id,
               postingDate,
-              `${period.period_month}-${period.property_id}`,
+              invoiceNumber,
               chargeAmount,
               newBal,
-              desc
+              desc,
+              userId
             ]);
 
-            // Update tenant balances
+            // C. Update tenant balances
             await conn.query(`
               UPDATE tenants 
               SET current_balance = ?, water_balance = ?
               WHERE id = ?
             `, [newBal, newWaterBal, charge.tenant_id]);
 
+            // D. Update property total outstanding
+            await conn.query(`
+              UPDATE properties 
+              SET total_outstanding_rent = total_outstanding_rent + ?
+              WHERE id = ?
+            `, [chargeAmount, period.property_id]);
+
+            // E. Link charge to invoice and mark as POSTED
+            await conn.query('UPDATE water_charges SET status = "POSTED", invoice_id = ? WHERE id = ?', [invoiceId, charge.id]);
+
             postedTenantCount++;
             postedTotalAmount += chargeAmount;
           }
+        } else {
+          // If no tenant assigned to unit, mark charge as POSTED without tenant ledger
+          await conn.query('UPDATE water_charges SET status = "POSTED" WHERE id = ?', [charge.id]);
         }
-
-        // Mark charge as POSTED
-        await conn.query('UPDATE water_charges SET status = "POSTED" WHERE id = ?', [charge.id]);
       }
 
       // 4. Update water_costs status to POSTED
@@ -4593,18 +4663,21 @@ router.post('/water/periods/:id/post', async (req: Request, res: Response) => {
       // 5. Audit Log
       await conn.query(`
         INSERT INTO audit_logs (id, user_id, user_name, action, entity, entity_id, details)
-        VALUES (?, 'usr-1', ?, 'POST_WATER_PERIOD', 'water_costs', ?, ?)
+        VALUES (?, ?, ?, 'POST_WATER_PERIOD', 'water_costs', ?, ?)
       `, [
         `aud-${Date.now()}`,
+        userId,
         postedBy,
         id,
         JSON.stringify({
           periodMonth: period.period_month,
           propertyId: period.property_id,
-          totalCost,
+          propertyName: period.property_name,
+          totalOperatingCost: totalCost,
           totalDistributed,
           postedTenants: postedTenantCount,
-          postedAmount: postedTotalAmount
+          postedAmount: postedTotalAmount,
+          postedAt: new Date().toISOString()
         })
       ]);
 
@@ -4614,7 +4687,7 @@ router.post('/water/periods/:id/post', async (req: Request, res: Response) => {
         status: 'POSTED',
         postedTenantsCount: postedTenantCount,
         postedTotalAmount,
-        message: `تم ترحيل تكاليف المياه بنجاح إلى ذمم ${postedTenantCount} مستأجراً بإجمالي ${postedTotalAmount.toLocaleString()} ريال`
+        message: `تم ترحيل تكاليف المياه بنجاح إلى ذمم ${postedTenantCount} مستأجراً بإجمالي ${postedTotalAmount.toLocaleString()} ر.ي`
       };
     });
 
@@ -4624,32 +4697,84 @@ router.post('/water/periods/:id/post', async (req: Request, res: Response) => {
   }
 });
 
-// Cancel unposted Water Period
+// Cancel unposted Water Period: POST /api/water/periods/:id/cancel
 router.post('/water/periods/:id/cancel', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
+    const userRole = (req.headers['x-user-role'] as string) || (req.body?.userRole as string) || 'SUPER_ADMIN';
+    const userId = (req.headers['x-user-id'] as string) || (req.body?.userId as string) || 'usr-1';
+    const userName = (req.headers['x-user-name'] as string) || (req.body?.userName as string) || 'م. أحمد الوهاس';
     const { reason = 'إلغاء دورة المياه' } = req.body;
-    const pool = await getPool();
 
-    const [rows]: any = await pool.query('SELECT status FROM water_costs WHERE id = ?', [id]);
-    if (rows.length === 0) return res.status(404).json({ error: 'دورة المياه غير موجودة' });
-    if (rows[0].status === 'POSTED') {
-      return res.status(400).json({ error: 'لا يمكن إلغاء دورة مياه مرحلة إلى ذمم المستأجرين. تتطلب تسوية محاسبية عكسية' });
+    // Verify permission: Only System Administrator, Property Manager, or Accountant can cancel
+    const allowedRoles = ['SUPER_ADMIN', 'PROPERTY_MANAGER', 'ACCOUNTANT'];
+    if (!allowedRoles.includes(userRole)) {
+      return res.status(403).json({ error: 'غير مصرح: إلغاء دورات التكاليف مقتصر على مدير النظام، مدير الأملاك، أو المحاسب' });
     }
 
-    await pool.query(`
-      UPDATE water_costs 
-      SET status = 'CANCELLED', notes = CONCAT(COALESCE(notes, ''), ' [تم الإلغاء: ', ?, ']')
-      WHERE id = ?
-    `, [reason, id]);
+    const result = await executeTransaction(async (conn) => {
+      const [rows]: any = await conn.query('SELECT * FROM water_costs WHERE id = ? FOR UPDATE', [id]);
+      if (rows.length === 0) {
+        throw new Error('دورة تكاليف المياه غير موجودة');
+      }
 
-    res.json({ message: 'تم إلغاء دورة تكاليف المياه بنجاح' });
+      const period = rows[0];
+      if (period.status === 'POSTED') {
+        throw new Error('لا يمكن إلغاء دورة مياه مرحلة رسمياً إلى ذمم المستأجرين لمنع التلاعب المالي وحماية سلامة الدفاتر المحاسبية. يتطلب ذلك تسوية قيود محاسبية عكسية معتمدة.');
+      }
+      if (period.status === 'CLOSED') {
+        throw new Error('لا يمكن إلغاء دورة مياه مغلقة محاسبياً');
+      }
+      if (period.status === 'CANCELLED') {
+        throw new Error('دورة المياه ملغاة بالفعل مسبقاً');
+      }
+
+      const cancellationNote = ` [تم الإلغاء بواسطة ${userName} في ${new Date().toISOString().slice(0, 10)} - السبب: ${reason}]`;
+
+      // Update parent period
+      await conn.query(`
+        UPDATE water_costs 
+        SET status = 'CANCELLED', notes = CONCAT(COALESCE(notes, ''), ?)
+        WHERE id = ?
+      `, [cancellationNote, id]);
+
+      // Update any charges to CANCELLED
+      await conn.query('UPDATE water_charges SET status = "CANCELLED" WHERE period_id = ?', [id]);
+
+      // Record in audit log
+      await conn.query(`
+        INSERT INTO audit_logs (id, user_id, user_name, action, entity, entity_id, details)
+        VALUES (?, ?, ?, 'CANCEL_WATER_PERIOD', 'water_costs', ?, ?)
+      `, [
+        `aud-${Date.now()}`,
+        userId,
+        userName,
+        id,
+        JSON.stringify({
+          periodMonth: period.period_month,
+          propertyId: period.property_id,
+          propertyName: period.property_name,
+          reason,
+          cancelledBy: userName,
+          cancelledAt: new Date().toISOString()
+        })
+      ]);
+
+      return {
+        success: true,
+        message: 'تم إلغاء دورة تكاليف المياه بنجاح',
+        periodId: id,
+        status: 'CANCELLED'
+      };
+    });
+
+    res.json(result);
   } catch (err: any) {
     res.status(400).json({ error: err.message });
   }
 });
 
-// Water Cost Report API
+// Water Cost Report API (Basic)
 router.get('/water/reports', async (req: Request, res: Response) => {
   try {
     const { propertyId, year } = req.query;
@@ -4718,6 +4843,404 @@ router.get('/water/reports', async (req: Request, res: Response) => {
       distributionMethod: r.distribution_method,
       status: r.status
     })));
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Comprehensive Detailed Water Reports API: GET /api/water/reports/detailed
+// Supports: Daily, Monthly, Annual (with monthly breakdown), Date Range, and Detailed Comprehensive
+// Avoids Cartesian product inflation by running accurate, distinct subqueries
+router.get('/water/reports/detailed', async (req: Request, res: Response) => {
+  try {
+    const {
+      reportType = 'detailed', // daily | monthly | annual | range | detailed
+      date,
+      month,
+      year = new Date().getFullYear(),
+      startDate,
+      endDate,
+      propertyId,
+      buildingId,
+      unitId,
+      tenantId,
+      status,
+      distributionMethod,
+      search
+    } = req.query;
+
+    const pool = await getPool();
+
+    // 1. Build Periods Filter SQL
+    let periodSql = `
+      SELECT 
+        w.*,
+        p.name as property_name,
+        p.code as property_code
+      FROM water_costs w
+      LEFT JOIN properties p ON w.property_id = p.id
+      WHERE 1=1
+    `;
+    const periodParams: any[] = [];
+
+    if (propertyId && propertyId !== 'ALL') {
+      periodSql += ' AND w.property_id = ?';
+      periodParams.push(propertyId);
+    }
+
+    if (status && status !== 'ALL') {
+      periodSql += ' AND w.status = ?';
+      periodParams.push(status);
+    }
+
+    if (distributionMethod && distributionMethod !== 'ALL') {
+      periodSql += ' AND w.distribution_method = ?';
+      periodParams.push(distributionMethod);
+    }
+
+    // Time filtering based on reportType
+    if (reportType === 'daily' && date) {
+      periodSql += ' AND (w.period_start <= ? AND (w.period_end >= ? OR w.period_end IS NULL))';
+      periodParams.push(date, date);
+    } else if (reportType === 'monthly') {
+      if (month) {
+        periodSql += ' AND (w.period_month LIKE ? OR DATE_FORMAT(w.period_start, "%Y-%m") = ?)';
+        periodParams.push(`%${month}%`, month);
+      }
+      if (year) {
+        periodSql += ' AND (w.period_year = ? OR w.period_month LIKE ?)';
+        periodParams.push(Number(year), `%${year}%`);
+      }
+    } else if (reportType === 'annual') {
+      if (year) {
+        periodSql += ' AND (w.period_year = ? OR w.period_month LIKE ? OR YEAR(w.period_start) = ?)';
+        periodParams.push(Number(year), `%${year}%`, Number(year));
+      }
+    } else if (reportType === 'range' || reportType === 'detailed') {
+      if (startDate) {
+        periodSql += ' AND (w.period_end >= ? OR w.period_start >= ?)';
+        periodParams.push(startDate, startDate);
+      }
+      if (endDate) {
+        periodSql += ' AND (w.period_start <= ? OR w.period_end <= ?)';
+        periodParams.push(endDate, endDate);
+      }
+    }
+
+    if (search && typeof search === 'string' && search.trim()) {
+      const s = `%${search.trim()}%`;
+      periodSql += ' AND (w.id LIKE ? OR w.period_month LIKE ? OR p.name LIKE ? OR w.notes LIKE ?)';
+      periodParams.push(s, s, s, s);
+    }
+
+    periodSql += ' ORDER BY w.period_start DESC, w.created_at DESC';
+
+    const [periodRows]: any = await pool.query(periodSql, periodParams);
+
+    const periodIds = periodRows.map((p: any) => p.id);
+
+    // 2. Fetch Tankers for matching periods (or matching date if daily)
+    let tankersList: any[] = [];
+    if (periodIds.length > 0 || (reportType === 'daily' && date)) {
+      let tankerSql = `
+        SELECT 
+          t.*,
+          p.name as property_name,
+          w.period_month
+        FROM water_tankers t
+        LEFT JOIN properties p ON t.property_id = p.id
+        LEFT JOIN water_costs w ON t.period_id = w.id
+        WHERE 1=1
+      `;
+      const tankerParams: any[] = [];
+
+      if (propertyId && propertyId !== 'ALL') {
+        tankerSql += ' AND t.property_id = ?';
+        tankerParams.push(propertyId);
+      }
+
+      if (reportType === 'daily' && date) {
+        tankerSql += ' AND t.entry_date = ?';
+        tankerParams.push(date);
+      } else if (periodIds.length > 0) {
+        tankerSql += ` AND t.period_id IN (${periodIds.map(() => '?').join(',')})`;
+        tankerParams.push(...periodIds);
+      }
+
+      tankerSql += ' ORDER BY t.entry_date DESC, t.created_at DESC';
+      const [tRows]: any = await pool.query(tankerSql, tankerParams);
+      tankersList = tRows.map((r: any) => ({
+        id: r.id,
+        periodId: r.period_id,
+        periodMonth: r.period_month,
+        propertyId: r.property_id,
+        propertyName: r.property_name,
+        entryDate: formatSqlDate(r.entry_date) || '',
+        tankerCount: Number(r.tanker_count || 1),
+        costPerTanker: Number(r.cost_per_tanker || 0),
+        totalCost: Number(r.total_cost || 0),
+        supplierName: r.supplier_name || 'مورد عام',
+        tankerNumber: r.tanker_number || '',
+        receiptNumber: r.receipt_number || '',
+        paymentMethod: r.payment_method || 'CASH',
+        notes: r.notes || ''
+      }));
+    }
+
+    // 3. Fetch Cost Items / Expenses
+    let expenseList: any[] = [];
+    if (periodIds.length > 0 || (reportType === 'daily' && date)) {
+      let expSql = `
+        SELECT 
+          ci.*,
+          p.name as property_name,
+          w.period_month
+        FROM water_cost_items ci
+        LEFT JOIN properties p ON ci.property_id = p.id
+        LEFT JOIN water_costs w ON ci.period_id = w.id
+        WHERE 1=1
+      `;
+      const expParams: any[] = [];
+
+      if (propertyId && propertyId !== 'ALL') {
+        expSql += ' AND ci.property_id = ?';
+        expParams.push(propertyId);
+      }
+
+      if (reportType === 'daily' && date) {
+        expSql += ' AND ci.entry_date = ?';
+        expParams.push(date);
+      } else if (periodIds.length > 0) {
+        expSql += ` AND ci.period_id IN (${periodIds.map(() => '?').join(',')})`;
+        expParams.push(...periodIds);
+      }
+
+      expSql += ' ORDER BY ci.entry_date DESC, ci.created_at DESC';
+      const [expRows]: any = await pool.query(expSql, expParams);
+      expenseList = expRows.map((r: any) => ({
+        id: r.id,
+        periodId: r.period_id,
+        periodMonth: r.period_month,
+        propertyId: r.property_id,
+        propertyName: r.property_name,
+        costCategory: r.cost_category,
+        amount: Number(r.amount || 0),
+        entryDate: formatSqlDate(r.entry_date) || '',
+        referenceNumber: r.reference_number || '',
+        description: r.description || '',
+        notes: r.notes || ''
+      }));
+    }
+
+    // 4. Fetch Tenant Charges (Filtered by building, unit, tenant if requested)
+    let chargesList: any[] = [];
+    if (periodIds.length > 0) {
+      let chgSql = `
+        SELECT 
+          wc.*,
+          u.unit_number,
+          u.type as unit_type,
+          u.area_sqm as unit_area,
+          u.building_id,
+          b.name as building_name,
+          t.phone as tenant_phone,
+          p.name as property_name,
+          w.period_month,
+          w.status as period_status,
+          inv.invoice_number,
+          inv.status as invoice_status
+        FROM water_charges wc
+        LEFT JOIN units u ON wc.unit_id = u.id
+        LEFT JOIN buildings b ON u.building_id = b.id
+        LEFT JOIN tenants t ON wc.tenant_id = t.id
+        LEFT JOIN properties p ON wc.property_id = p.id
+        LEFT JOIN water_costs w ON wc.period_id = w.id
+        LEFT JOIN invoices inv ON wc.invoice_id = inv.id
+        WHERE wc.period_id IN (${periodIds.map(() => '?').join(',')})
+      `;
+      const chgParams: any[] = [...periodIds];
+
+      if (buildingId && buildingId !== 'ALL') {
+        chgSql += ' AND u.building_id = ?';
+        chgParams.push(buildingId);
+      }
+
+      if (unitId && unitId !== 'ALL') {
+        chgSql += ' AND wc.unit_id = ?';
+        chgParams.push(unitId);
+      }
+
+      if (tenantId && tenantId !== 'ALL') {
+        chgSql += ' AND wc.tenant_id = ?';
+        chgParams.push(tenantId);
+      }
+
+      chgSql += ' ORDER BY wc.unit_number ASC, wc.created_at ASC';
+      const [chgRows]: any = await pool.query(chgSql, chgParams);
+      chargesList = chgRows.map((r: any) => ({
+        id: r.id,
+        periodId: r.period_id,
+        periodMonth: r.period_month,
+        periodStatus: r.period_status,
+        propertyId: r.property_id,
+        propertyName: r.property_name,
+        buildingId: r.building_id,
+        buildingName: r.building_name || '',
+        unitId: r.unit_id,
+        unitNumber: r.unit_number,
+        unitType: r.unit_type,
+        unitArea: Number(r.unit_area || 0),
+        tenantId: r.tenant_id,
+        tenantName: r.tenant_name || 'شاغر / غير مؤجر',
+        tenantPhone: r.tenant_phone || '',
+        contractId: r.contract_id,
+        distributionBasis: r.distribution_basis,
+        basisValue: Number(r.basis_value || 0),
+        calculatedShare: Number(r.calculated_share || 0),
+        finalCharge: Number(r.final_charge || 0),
+        isOccupied: Boolean(r.is_occupied),
+        status: r.status,
+        invoiceId: r.invoice_id,
+        invoiceNumber: r.invoice_number || '',
+        invoiceStatus: r.invoice_status || '',
+        notes: r.notes || ''
+      }));
+    }
+
+    // 5. Structure Periods List
+    const periodsFormatted = periodRows.map((r: any) => ({
+      id: r.id,
+      propertyId: r.property_id,
+      propertyName: r.property_name,
+      propertyCode: r.property_code,
+      periodMonth: r.period_month,
+      periodYear: r.period_year ? Number(r.period_year) : undefined,
+      periodStart: formatSqlDate(r.period_start),
+      periodEnd: formatSqlDate(r.period_end),
+      tankerCount: Number(r.tanker_count || 0),
+      tankerUnitPrice: Number(r.tanker_unit_price || 0),
+      totalTankerCost: Number(r.total_tanker_cost || 0),
+      pumpElectricityCost: Number(r.pump_electricity_cost || 0),
+      sewerCost: Number(r.sewer_cost || 0),
+      tankMaintenanceCost: Number(r.tank_maintenance_cost || 0),
+      cleaningCost: Number(r.cleaning_cost || 0),
+      laborCost: Number(r.labor_cost || 0),
+      treatmentCost: Number(r.treatment_cost || 0),
+      otherFees: Number(r.other_fees || 0),
+      netTotalOperatingCost: Number(r.net_total_operating_cost || 0),
+      totalDistributedAmount: Number(r.total_distributed_amount || 0),
+      differenceAmount: Number(r.difference_amount || 0),
+      distributionMethod: r.distribution_method,
+      status: r.status,
+      notes: r.notes || '',
+      postedAt: formatSqlDateTime(r.posted_at),
+      postedBy: r.posted_by,
+      closedAt: formatSqlDateTime(r.closed_at),
+      closedBy: r.closed_by,
+      createdAt: formatSqlDateTime(r.created_at)
+    }));
+
+    // 6. Calculate Summary Metrics (Accurate, distinct sums with NO join multiplication)
+    const totalPeriodsCount = periodsFormatted.length;
+    const totalTankersCount = periodsFormatted.reduce((acc: number, p: any) => acc + p.tankerCount, 0);
+    const totalTankersCost = periodsFormatted.reduce((acc: number, p: any) => acc + p.totalTankerCost, 0);
+    const totalPumpElectricityCost = periodsFormatted.reduce((acc: number, p: any) => acc + p.pumpElectricityCost, 0);
+    const totalSewerCost = periodsFormatted.reduce((acc: number, p: any) => acc + p.sewerCost, 0);
+    const totalMaintenanceCost = periodsFormatted.reduce((acc: number, p: any) => acc + p.tankMaintenanceCost, 0);
+    const totalCleaningCost = periodsFormatted.reduce((acc: number, p: any) => acc + p.cleaningCost, 0);
+    const totalLaborCost = periodsFormatted.reduce((acc: number, p: any) => acc + p.laborCost, 0);
+    const totalOtherCost = periodsFormatted.reduce((acc: number, p: any) => acc + p.otherFees + p.treatmentCost, 0);
+    const netTotalWaterCost = periodsFormatted.reduce((acc: number, p: any) => acc + p.netTotalOperatingCost, 0);
+    const totalDistributedAmount = periodsFormatted.reduce((acc: number, p: any) => acc + p.totalDistributedAmount, 0);
+    const totalPostedAmount = periodsFormatted
+      .filter((p: any) => p.status === 'POSTED')
+      .reduce((acc: number, p: any) => acc + p.totalDistributedAmount, 0);
+    const totalDifferenceAmount = periodsFormatted.reduce((acc: number, p: any) => acc + p.differenceAmount, 0);
+
+    const participatingUnitsCount = new Set(chargesList.map(c => c.unitId)).size;
+    const participatingTenantsCount = new Set(chargesList.filter(c => c.tenantId).map(c => c.tenantId)).size;
+
+    // 7. Monthly Breakdown (12 Months of the selected year for Annual Reports)
+    const monthNamesArabic = [
+      'يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو',
+      'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'
+    ];
+    const monthlyBreakdown = monthNamesArabic.map((mName, idx) => {
+      const monthNum = idx + 1;
+      const monthPrefix = `${year}-${String(monthNum).padStart(2, '0')}`;
+      
+      const matchingPeriods = periodsFormatted.filter((p: any) => {
+        if (p.periodStart && p.periodStart.startsWith(monthPrefix)) return true;
+        if (p.periodMonth && (p.periodMonth.includes(mName) || p.periodMonth.startsWith(mName))) return true;
+        return false;
+      });
+
+      const mTankerCount = matchingPeriods.reduce((acc: number, p: any) => acc + p.tankerCount, 0);
+      const mTankerCost = matchingPeriods.reduce((acc: number, p: any) => acc + p.totalTankerCost, 0);
+      const mOperatingCost = matchingPeriods.reduce((acc: number, p: any) => 
+        acc + (p.netTotalOperatingCost - p.totalTankerCost), 0);
+      const mTotalCost = matchingPeriods.reduce((acc: number, p: any) => acc + p.netTotalOperatingCost, 0);
+      const mDistributed = matchingPeriods.reduce((acc: number, p: any) => acc + p.totalDistributedAmount, 0);
+      const mPosted = matchingPeriods
+        .filter((p: any) => p.status === 'POSTED')
+        .reduce((acc: number, p: any) => acc + p.totalDistributedAmount, 0);
+
+      return {
+        monthIndex: monthNum,
+        monthName: `${mName} ${year}`,
+        periodsCount: matchingPeriods.length,
+        tankerCount: mTankerCount,
+        tankerCost: mTankerCost,
+        operatingCost: mOperatingCost,
+        totalCost: mTotalCost,
+        distributedAmount: mDistributed,
+        postedAmount: mPosted,
+        status: matchingPeriods.length > 0 
+          ? matchingPeriods.every((p: any) => p.status === 'POSTED') ? 'POSTED' : 'PARTIAL'
+          : 'NO_CYCLES'
+      };
+    });
+
+    res.json({
+      reportType,
+      filters: {
+        date: date || null,
+        month: month || null,
+        year: year ? Number(year) : null,
+        startDate: startDate || null,
+        endDate: endDate || null,
+        propertyId: propertyId || 'ALL',
+        buildingId: buildingId || 'ALL',
+        unitId: unitId || 'ALL',
+        tenantId: tenantId || 'ALL',
+        status: status || 'ALL',
+        distributionMethod: distributionMethod || 'ALL',
+        search: search || null
+      },
+      generatedAt: new Date().toISOString(),
+      summary: {
+        totalPeriodsCount,
+        totalTankersCount,
+        totalTankersCost,
+        totalPumpElectricityCost,
+        totalSewerCost,
+        totalMaintenanceCost,
+        totalCleaningCost,
+        totalLaborCost,
+        totalOtherCost,
+        netTotalWaterCost,
+        totalDistributedAmount,
+        totalPostedAmount,
+        totalDifferenceAmount,
+        participatingUnitsCount,
+        participatingTenantsCount
+      },
+      monthlyBreakdown,
+      periods: periodsFormatted,
+      tankers: tankersList,
+      expenses: expenseList,
+      charges: chargesList
+    });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
