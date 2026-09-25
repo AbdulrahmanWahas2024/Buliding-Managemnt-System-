@@ -3,6 +3,30 @@ import { getPool, executeTransaction } from './db';
 
 const router = express.Router();
 
+export function getRequestUser(req: Request) {
+  const userRole = (req.headers['x-user-role'] as string) || req.body?.userRole || 'SUPER_ADMIN';
+  const userId = (req.headers['x-user-id'] as string) || req.body?.userId || 'usr-1';
+  let userName = (req.headers['x-user-name'] as string) || req.body?.userName || 'م. أحمد الوهاس';
+  try {
+    userName = decodeURIComponent(userName);
+  } catch {
+    // Keep original
+  }
+  return { userRole, userId, userName };
+}
+
+// Middleware to safely decode URL-encoded headers (e.g. Arabic user name from client)
+router.use((req: Request, _res: Response, next) => {
+  if (req.headers['x-user-name'] && typeof req.headers['x-user-name'] === 'string') {
+    try {
+      req.headers['x-user-name'] = decodeURIComponent(req.headers['x-user-name']);
+    } catch {
+      // Keep original if not encoded
+    }
+  }
+  next();
+});
+
 // 1. Health check with real database connectivity check
 router.get('/health', async (req: Request, res: Response) => {
   try {
@@ -5246,24 +5270,835 @@ router.get('/water/reports/detailed', async (req: Request, res: Response) => {
   }
 });
 
-// 10. Electricity Metering Engine API
+// 10. Comprehensive Electricity & Metering ERP Engine API
+
+// A. Electricity Dashboard KPIs
+router.get('/electricity/dashboard', async (req: Request, res: Response) => {
+  try {
+    const pool = await getPool();
+    const { propertyId, buildingId, periodMonth } = req.query;
+
+    let meterWhere = '1=1';
+    const meterParams: any[] = [];
+    if (propertyId && propertyId !== 'ALL') {
+      meterWhere += ' AND property_id = ?';
+      meterParams.push(propertyId);
+    }
+    if (buildingId && buildingId !== 'ALL') {
+      meterWhere += ' AND building_id = ?';
+      meterParams.push(buildingId);
+    }
+
+    const [meterStatsRows]: any = await pool.query(`
+      SELECT 
+        COUNT(*) as totalMeters,
+        COALESCE(SUM(CASE WHEN status = 'ACTIVE' THEN 1 ELSE 0 END), 0) as activeMeters,
+        COALESCE(SUM(CASE WHEN status != 'ACTIVE' THEN 1 ELSE 0 END), 0) as inactiveMeters,
+        COUNT(DISTINCT property_id) as propertiesWithElectricityCount
+      FROM electricity_meters
+      WHERE ${meterWhere}
+    `, meterParams);
+
+    // Current billing period month (e.g. "سبتمبر 2026")
+    const now = new Date();
+    const arabicMonths = ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'];
+    const currentPeriodMonth = (periodMonth as string) || `${arabicMonths[now.getMonth()]} ${now.getFullYear()}`;
+
+    // Readings in selected period
+    let readingWhere = 'reading_period_month = ?';
+    const readingParams: any[] = [currentPeriodMonth];
+    if (propertyId && propertyId !== 'ALL') {
+      readingWhere += ' AND property_id = ?';
+      readingParams.push(propertyId);
+    }
+
+    const [readingStatsRows]: any = await pool.query(`
+      SELECT 
+        COALESCE(SUM(consumption_kwh), 0) as totalConsumptionCurrentPeriod,
+        COALESCE(SUM(total_amount), 0) as totalChargesCurrentPeriod,
+        COUNT(*) as periodReadingsCount
+      FROM electricity_readings
+      WHERE ${readingWhere}
+    `, readingParams);
+
+    // Total meters needing reading for current period
+    const [needingReadingRows]: any = await pool.query(`
+      SELECT COUNT(*) as needingCount
+      FROM electricity_meters m
+      WHERE m.status = 'ACTIVE' ${propertyId && propertyId !== 'ALL' ? 'AND m.property_id = ?' : ''}
+        AND m.id NOT IN (
+          SELECT COALESCE(meter_id, '') 
+          FROM electricity_readings 
+          WHERE reading_period_month = ?
+        )
+    `, propertyId && propertyId !== 'ALL' ? [propertyId, currentPeriodMonth] : [currentPeriodMonth]);
+
+    // Financial stats from invoices and ledger
+    let invWhere = "account_type = 'ELECTRICITY'";
+    const invParams: any[] = [];
+    if (propertyId && propertyId !== 'ALL') {
+      invWhere += ' AND property_id = ?';
+      invParams.push(propertyId);
+    }
+
+    const [invStatsRows]: any = await pool.query(`
+      SELECT 
+        COUNT(*) as totalInvoicesCount,
+        COALESCE(SUM(total_amount), 0) as totalElectricityCharges,
+        COALESCE(SUM(CASE WHEN status = 'UNPAID' THEN 1 ELSE 0 END), 0) as unpaidChargesCount,
+        COALESCE(SUM(CASE WHEN status = 'UNPAID' THEN remaining_amount ELSE 0 END), 0) as unpaidChargesAmount
+      FROM invoices
+      WHERE ${invWhere}
+    `, invParams);
+
+    res.json({
+      totalMeters: Number(meterStatsRows[0]?.totalMeters || 0),
+      activeMeters: Number(meterStatsRows[0]?.activeMeters || 0),
+      inactiveMeters: Number(meterStatsRows[0]?.inactiveMeters || 0),
+      propertiesWithElectricityCount: Number(meterStatsRows[0]?.propertiesWithElectricityCount || 0),
+      currentBillingPeriod: currentPeriodMonth,
+      metersNeedingReading: Number(needingReadingRows[0]?.needingCount || 0),
+      totalConsumptionCurrentPeriod: Number(readingStatsRows[0]?.totalConsumptionCurrentPeriod || 0),
+      totalElectricityCharges: Number(invStatsRows[0]?.totalElectricityCharges || 0) || Number(readingStatsRows[0]?.totalChargesCurrentPeriod || 0),
+      totalInvoicesCount: Number(invStatsRows[0]?.totalInvoicesCount || 0),
+      unpaidChargesCount: Number(invStatsRows[0]?.unpaidChargesCount || 0),
+      unpaidChargesAmount: Number(invStatsRows[0]?.unpaidChargesAmount || 0)
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// B. Electricity Meters CRUD & Assignments
+router.get('/electricity/meters', async (req: Request, res: Response) => {
+  try {
+    const pool = await getPool();
+    const { propertyId, buildingId, status, search } = req.query;
+
+    let query = `
+      SELECT 
+        m.*,
+        p.name as property_name,
+        p.code as property_code,
+        b.name as building_name,
+        u.unit_number,
+        u.type as unit_type,
+        u.current_tenant_id,
+        u.current_tenant_name,
+        u.current_contract_id
+      FROM electricity_meters m
+      LEFT JOIN properties p ON m.property_id = p.id
+      LEFT JOIN buildings b ON m.building_id = b.id
+      LEFT JOIN units u ON m.unit_id = u.id
+      WHERE 1=1
+    `;
+    const params: any[] = [];
+
+    if (propertyId && propertyId !== 'ALL') {
+      query += ' AND m.property_id = ?';
+      params.push(propertyId);
+    }
+    if (buildingId && buildingId !== 'ALL') {
+      query += ' AND m.building_id = ?';
+      params.push(buildingId);
+    }
+    if (status && status !== 'ALL') {
+      query += ' AND m.status = ?';
+      params.push(status);
+    }
+    if (search) {
+      query += ' AND (m.meter_number LIKE ? OR u.unit_number LIKE ? OR p.name LIKE ? OR m.notes LIKE ?)';
+      const s = `%${search}%`;
+      params.push(s, s, s, s);
+    }
+
+    query += ' ORDER BY m.created_at DESC, m.meter_number ASC';
+
+    const [rows]: any = await pool.query(query, params);
+    res.json(rows.map((r: any) => ({
+      id: r.id,
+      meterNumber: r.meter_number,
+      propertyId: r.property_id,
+      propertyName: r.property_name,
+      propertyCode: r.property_code,
+      buildingId: r.building_id,
+      buildingName: r.building_name,
+      unitId: r.unit_id,
+      unitNumber: r.unit_number,
+      unitType: r.unit_type,
+      currentTenantId: r.current_tenant_id,
+      currentTenantName: r.current_tenant_name,
+      currentContractId: r.current_contract_id,
+      meterType: r.meter_type,
+      status: r.status,
+      installationDate: formatSqlDate(r.installation_date),
+      initialReading: Number(r.initial_reading || 0),
+      currentReading: Number(r.current_reading || 0),
+      previousReading: Number(r.previous_reading || 0),
+      multiplier: Number(r.multiplier || 1),
+      locationNotes: r.location_notes,
+      notes: r.notes,
+      createdBy: r.created_by,
+      createdAt: formatSqlDateTime(r.created_at),
+      updatedAt: formatSqlDateTime(r.updated_at)
+    })));
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/electricity/meters/:id', async (req: Request, res: Response) => {
+  try {
+    const pool = await getPool();
+    const { id } = req.params;
+
+    const [rows]: any = await pool.query(`
+      SELECT 
+        m.*,
+        p.name as property_name,
+        p.code as property_code,
+        b.name as building_name,
+        u.unit_number,
+        u.type as unit_type,
+        u.current_tenant_id,
+        u.current_tenant_name,
+        u.current_contract_id
+      FROM electricity_meters m
+      LEFT JOIN properties p ON m.property_id = p.id
+      LEFT JOIN buildings b ON m.building_id = b.id
+      LEFT JOIN units u ON m.unit_id = u.id
+      WHERE m.id = ?
+    `, [id]);
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'العداد الكهربائي غير موجود' });
+    }
+
+    const r = rows[0];
+
+    // Fetch meter readings history
+    const [readings]: any = await pool.query(`
+      SELECT * FROM electricity_readings 
+      WHERE meter_id = ? OR meter_number = ?
+      ORDER BY reading_date DESC, created_at DESC
+      LIMIT 50
+    `, [r.id, r.meter_number]);
+
+    // Fetch replacements history
+    const [replacements]: any = await pool.query(`
+      SELECT * FROM meter_replacements
+      WHERE old_meter_id = ? OR new_meter_id = ?
+      ORDER BY replacement_date DESC
+    `, [r.id, r.id]);
+
+    res.json({
+      id: r.id,
+      meterNumber: r.meter_number,
+      propertyId: r.property_id,
+      propertyName: r.property_name,
+      propertyCode: r.property_code,
+      buildingId: r.building_id,
+      buildingName: r.building_name,
+      unitId: r.unit_id,
+      unitNumber: r.unit_number,
+      unitType: r.unit_type,
+      currentTenantId: r.current_tenant_id,
+      currentTenantName: r.current_tenant_name,
+      currentContractId: r.current_contract_id,
+      meterType: r.meter_type,
+      status: r.status,
+      installationDate: formatSqlDate(r.installation_date),
+      initialReading: Number(r.initial_reading || 0),
+      currentReading: Number(r.current_reading || 0),
+      previousReading: Number(r.previous_reading || 0),
+      multiplier: Number(r.multiplier || 1),
+      locationNotes: r.location_notes,
+      notes: r.notes,
+      createdBy: r.created_by,
+      createdAt: formatSqlDateTime(r.created_at),
+      updatedAt: formatSqlDateTime(r.updated_at),
+      readings: readings.map((rd: any) => ({
+        id: rd.id,
+        meterNumber: rd.meter_number,
+        readingPeriodMonth: rd.reading_period_month,
+        readingDate: formatSqlDate(rd.reading_date),
+        previousReading: Number(rd.previous_reading),
+        currentReading: Number(rd.current_reading),
+        consumptionKwh: Number(rd.consumption_kwh),
+        ratePerKwh: Number(rd.rate_per_kwh),
+        totalAmount: Number(rd.total_amount),
+        status: rd.status,
+        notes: rd.notes
+      })),
+      replacements: replacements.map((rep: any) => ({
+        id: rep.id,
+        oldMeterNumber: rep.old_meter_number,
+        newMeterNumber: rep.new_meter_number,
+        finalReadingOld: Number(rep.final_reading_old),
+        initialReadingNew: Number(rep.initial_reading_new),
+        replacementDate: formatSqlDate(rep.replacement_date),
+        reason: rep.reason,
+        replacedBy: rep.replaced_by,
+        notes: rep.notes
+      }))
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/electricity/meters', async (req: Request, res: Response) => {
+  try {
+    const { userRole, userId, userName } = getRequestUser(req);
+
+    const {
+      meterNumber,
+      propertyId,
+      buildingId,
+      unitId,
+      meterType = 'DIGITAL',
+      initialReading = 0,
+      multiplier = 1,
+      installationDate,
+      locationNotes,
+      notes
+    } = req.body;
+
+    if (!meterNumber || !meterNumber.trim()) {
+      return res.status(400).json({ error: 'رقم العداد مطلوب ولا يمكن تركه فارغاً' });
+    }
+    if (!propertyId) {
+      return res.status(400).json({ error: 'يجب تحديد العقار التابع له العداد' });
+    }
+
+    const cleanMeterNumber = meterNumber.trim();
+    const pool = await getPool();
+
+    // 1. Check duplicate meter number
+    const [existRows]: any = await pool.query('SELECT id FROM electricity_meters WHERE meter_number = ?', [cleanMeterNumber]);
+    if (existRows.length > 0) {
+      return res.status(400).json({ error: `رقم العداد [${cleanMeterNumber}] مسجل مسبقاً في النظام. يرجى إدخال رقم فريد.` });
+    }
+
+    // 2. Validate unit if provided
+    if (unitId) {
+      const [uRows]: any = await pool.query('SELECT id, property_id, unit_number FROM units WHERE id = ?', [unitId]);
+      if (uRows.length === 0) {
+        return res.status(400).json({ error: 'الوحدة العقارية المحددة غير موجودة' });
+      }
+      if (uRows[0].property_id !== propertyId) {
+        return res.status(400).json({ error: 'الوحدة المحددة لا تنتمي إلى العقار المختار' });
+      }
+
+      // Check if unit already has an active meter
+      const [unitMeterRows]: any = await pool.query(
+        "SELECT id, meter_number FROM electricity_meters WHERE unit_id = ? AND status = 'ACTIVE'",
+        [unitId]
+      );
+      if (unitMeterRows.length > 0) {
+        return res.status(400).json({ 
+          error: `الوحدة رقم [${uRows[0].unit_number}] مرتبطة مسبقاً بعداد نشط [${unitMeterRows[0].meter_number}]. يرجى إيقاف العداد القديم أو إجراء استبدال عداد.` 
+        });
+      }
+    }
+
+    const id = `mtr-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`;
+    const initRead = Number(initialReading || 0);
+    const instDate = installationDate || new Date().toISOString().slice(0, 10);
+
+    const result = await executeTransaction(async (conn) => {
+      await conn.query(`
+        INSERT INTO electricity_meters 
+        (id, meter_number, property_id, building_id, unit_id, meter_type, status, installation_date, initial_reading, current_reading, previous_reading, multiplier, location_notes, notes, created_by)
+        VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [
+        id, cleanMeterNumber, propertyId, buildingId || null, unitId || null,
+        meterType, instDate, initRead, initRead, initRead,
+        Number(multiplier || 1), locationNotes || null, notes || null, userName
+      ]);
+
+      // If assigned to a unit, update unit's electricity_meter_number
+      if (unitId) {
+        await conn.query('UPDATE units SET electricity_meter_number = ? WHERE id = ?', [cleanMeterNumber, unitId]);
+      }
+
+      // Audit Log
+      await conn.query(`
+        INSERT INTO audit_logs (id, user_id, user_name, action, entity, entity_id, details, timestamp)
+        VALUES (?, ?, ?, 'CREATE_METER', 'ELECTRICITY_METER', ?, ?, NOW())
+      `, [
+        `aud-${Date.now()}`, userId, userName, id,
+        `إضافة عداد كهرباء جديد برقم ${cleanMeterNumber} للعقار ${propertyId} والوحدة ${unitId || 'غير محددة'}`
+      ]);
+
+      return { id, meterNumber: cleanMeterNumber };
+    });
+
+    res.status(201).json({
+      message: 'تم إضافة العداد بنجاح وربطه بالوحدة المحددة',
+      ...result
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.put('/electricity/meters/:id', async (req: Request, res: Response) => {
+  try {
+    const { userRole, userId, userName } = getRequestUser(req);
+    const { id } = req.params;
+
+    const {
+      meterNumber,
+      meterType,
+      status,
+      multiplier,
+      locationNotes,
+      notes,
+      unitId
+    } = req.body;
+
+    const pool = await getPool();
+    const [existing]: any = await pool.query('SELECT * FROM electricity_meters WHERE id = ?', [id]);
+    if (existing.length === 0) {
+      return res.status(404).json({ error: 'العداد غير موجود' });
+    }
+
+    const cur = existing[0];
+    const newMeterNumber = meterNumber ? meterNumber.trim() : cur.meter_number;
+
+    if (newMeterNumber !== cur.meter_number) {
+      const [dup]: any = await pool.query('SELECT id FROM electricity_meters WHERE meter_number = ? AND id != ?', [newMeterNumber, id]);
+      if (dup.length > 0) {
+        return res.status(400).json({ error: `رقم العداد [${newMeterNumber}] مستخدم بالفعل لعداد آخر.` });
+      }
+    }
+
+    await executeTransaction(async (conn) => {
+      await conn.query(`
+        UPDATE electricity_meters SET
+          meter_number = ?,
+          meter_type = ?,
+          status = ?,
+          multiplier = ?,
+          location_notes = ?,
+          notes = ?,
+          unit_id = ?
+        WHERE id = ?
+      `, [
+        newMeterNumber,
+        meterType || cur.meter_type,
+        status || cur.status,
+        Number(multiplier || cur.multiplier || 1),
+        locationNotes !== undefined ? locationNotes : cur.location_notes,
+        notes !== undefined ? notes : cur.notes,
+        unitId !== undefined ? (unitId || null) : cur.unit_id,
+        id
+      ]);
+
+      // If unit was changed or updated, update unit's electricity_meter_number
+      if (unitId && unitId !== cur.unit_id) {
+        await conn.query('UPDATE units SET electricity_meter_number = ? WHERE id = ?', [newMeterNumber, unitId]);
+      }
+
+      await conn.query(`
+        INSERT INTO audit_logs (id, user_id, user_name, action, entity, entity_id, details, timestamp)
+        VALUES (?, ?, ?, 'UPDATE_METER', 'ELECTRICITY_METER', ?, ?, NOW())
+      `, [
+        `aud-${Date.now()}`, userId, userName, id,
+        `تعديل بيانات العداد رقم ${newMeterNumber} والحالة ${status || cur.status}`
+      ]);
+    });
+
+    res.json({ message: 'تم تحديث بيانات العداد بنجاح' });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.patch('/electricity/meters/:id/status', async (req: Request, res: Response) => {
+  try {
+    const { userRole, userId, userName } = getRequestUser(req);
+
+    const { id } = req.params;
+    const { status } = req.body;
+
+    if (!['ACTIVE', 'INACTIVE', 'DAMAGED', 'REPLACED'].includes(status)) {
+      return res.status(400).json({ error: 'حالة العداد غير صالحة' });
+    }
+
+    const pool = await getPool();
+    await pool.query('UPDATE electricity_meters SET status = ? WHERE id = ?', [status, id]);
+
+    await pool.query(`
+      INSERT INTO audit_logs (id, user_id, user_name, action, entity, entity_id, details, timestamp)
+      VALUES (?, ?, ?, 'CHANGE_METER_STATUS', 'ELECTRICITY_METER', ?, ?, NOW())
+    `, [
+      `aud-${Date.now()}`, userId, userName, id,
+      `تغيير حالة العداد ${id} إلى ${status}`
+    ]);
+
+    res.json({ message: `تم تحديث حالة العداد بنجاح إلى ${status}`, status });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// C. Meter Replacement Workflow
+router.post('/electricity/meters/:id/replace', async (req: Request, res: Response) => {
+  try {
+    const { userRole, userId, userName } = getRequestUser(req);
+
+    const { id } = req.params;
+    const {
+      newMeterNumber,
+      finalReadingOld,
+      initialReadingNew = 0,
+      replacementDate = new Date().toISOString().slice(0, 10),
+      reason,
+      notes
+    } = req.body;
+
+    if (!newMeterNumber || !newMeterNumber.trim()) {
+      return res.status(400).json({ error: 'رقم العداد البديل الجديد مطلوب' });
+    }
+    if (!reason || !reason.trim()) {
+      return res.status(400).json({ error: 'سبب استبدال العداد إلزامي للأرشفة والتدقيق المحاسبي' });
+    }
+
+    const cleanNewMeterNumber = newMeterNumber.trim();
+    const finalOld = Number(finalReadingOld);
+    const initNew = Number(initialReadingNew || 0);
+
+    const result = await executeTransaction(async (conn) => {
+      // 1. Fetch old meter with lock
+      const [oldRows]: any = await conn.query('SELECT * FROM electricity_meters WHERE id = ? FOR UPDATE', [id]);
+      if (oldRows.length === 0) {
+        throw new Error('العداد القديم المطلوب استبداله غير موجود');
+      }
+
+      const oldMeter = oldRows[0];
+
+      // Check new meter number duplicate
+      const [dup]: any = await conn.query('SELECT id FROM electricity_meters WHERE meter_number = ?', [cleanNewMeterNumber]);
+      if (dup.length > 0) {
+        throw new Error(`رقم العداد البديل الجديد [${cleanNewMeterNumber}] مستخدم مسبقاً في النظام`);
+      }
+
+      const newMeterId = `mtr-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`;
+      const replacementId = `mrep-${Date.now()}`;
+
+      // 2. Archive old meter
+      await conn.query(`
+        UPDATE electricity_meters 
+        SET status = 'REPLACED', current_reading = ?, notes = CONCAT(COALESCE(notes, ''), '\n[مستبدل بتاريخ ', ?, ' بالعداد ', ?, ']')
+        WHERE id = ?
+      `, [finalOld, replacementDate, cleanNewMeterNumber, id]);
+
+      // 3. Create new meter
+      await conn.query(`
+        INSERT INTO electricity_meters 
+        (id, meter_number, property_id, building_id, unit_id, meter_type, status, installation_date, initial_reading, current_reading, previous_reading, multiplier, notes, created_by)
+        VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?, ?, ?, ?, ?)
+      `, [
+        newMeterId, cleanNewMeterNumber, oldMeter.property_id, oldMeter.building_id, oldMeter.unit_id,
+        oldMeter.meter_type, replacementDate, initNew, initNew, initNew, oldMeter.multiplier,
+        `بديل للعداد السابق ${oldMeter.meter_number}. سبب الاستبدال: ${reason}. ${notes || ''}`,
+        userName
+      ]);
+
+      // 4. Update unit's meter pointer if assigned
+      if (oldMeter.unit_id) {
+        await conn.query('UPDATE units SET electricity_meter_number = ? WHERE id = ?', [cleanNewMeterNumber, oldMeter.unit_id]);
+      }
+
+      // 5. Insert meter_replacements record
+      await conn.query(`
+        INSERT INTO meter_replacements 
+        (id, old_meter_id, old_meter_number, new_meter_id, new_meter_number, unit_id, final_reading_old, initial_reading_new, replacement_date, reason, replaced_by, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [
+        replacementId, oldMeter.id, oldMeter.meter_number, newMeterId, cleanNewMeterNumber,
+        oldMeter.unit_id || 'NONE', finalOld, initNew, replacementDate, reason, userName, notes || null
+      ]);
+
+      // 6. Audit Log
+      await conn.query(`
+        INSERT INTO audit_logs (id, user_id, user_name, action, entity, entity_id, details, timestamp)
+        VALUES (?, ?, ?, 'REPLACE_METER', 'ELECTRICITY_METER', ?, ?, NOW())
+      `, [
+        `aud-${Date.now()}`, userId, userName, replacementId,
+        `استبدال العداد ${oldMeter.meter_number} بالعداد ${cleanNewMeterNumber}، القراءة النهائية للقديم ${finalOld}، الابتدائية للجديد ${initNew}. السبب: ${reason}`
+      ]);
+
+      return {
+        replacementId,
+        oldMeterNumber: oldMeter.meter_number,
+        newMeterNumber: cleanNewMeterNumber,
+        newMeterId
+      };
+    });
+
+    res.status(200).json({
+      message: 'تم إتمام استبدال العداد بنجاح وأرشفة القراءات السابقة',
+      ...result
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// D. Electricity Tariffs Management
+router.get('/electricity/tariffs', async (req: Request, res: Response) => {
+  try {
+    const pool = await getPool();
+    const { propertyId, status } = req.query;
+
+    let query = `
+      SELECT 
+        r.*,
+        COALESCE(p.name, 'كافة العقارات (عام)') as property_name
+      FROM electricity_rates r
+      LEFT JOIN properties p ON r.property_id = p.id
+      WHERE 1=1
+    `;
+    const params: any[] = [];
+
+    if (propertyId && propertyId !== 'ALL') {
+      query += ' AND (r.property_id = ? OR r.property_id = "ALL")';
+      params.push(propertyId);
+    }
+    if (status && status !== 'ALL') {
+      query += ' AND r.status = ?';
+      params.push(status);
+    }
+
+    query += ' ORDER BY r.effective_from DESC, r.created_at DESC';
+
+    const [rows]: any = await pool.query(query, params);
+    res.json(rows.map((r: any) => ({
+      id: r.id,
+      tariffName: r.tariff_name || 'تعرفة استهلاك الكهرباء',
+      propertyId: r.property_id,
+      propertyName: r.property_name,
+      ratePerKwh: Number(r.rate_per_kwh),
+      pricePerKWh: Number(r.rate_per_kwh),
+      effectiveFrom: formatSqlDate(r.effective_from),
+      effectiveTo: formatSqlDate(r.effective_to),
+      status: r.status || 'ACTIVE',
+      isActive: r.status === 'ACTIVE',
+      notes: r.notes || '',
+      createdBy: r.created_by,
+      createdAt: formatSqlDateTime(r.created_at)
+    })));
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/electricity/tariffs', async (req: Request, res: Response) => {
+  try {
+    const { userRole, userId, userName } = getRequestUser(req);
+
+    const {
+      tariffName = 'تعرفة استهلاك الكهرباء',
+      propertyId = 'ALL',
+      ratePerKwh,
+      effectiveFrom = new Date().toISOString().slice(0, 10),
+      effectiveTo,
+      status = 'ACTIVE',
+      notes
+    } = req.body;
+
+    const rate = Number(ratePerKwh);
+    if (!rate || rate <= 0) {
+      return res.status(400).json({ error: 'سعر الكيلوواط يجب أن يكون رقماً موجباً أكبر من الصفر' });
+    }
+
+    const id = `trf-${Date.now()}`;
+    const pool = await getPool();
+
+    await pool.query(`
+      INSERT INTO electricity_rates 
+      (id, tariff_name, property_id, rate_per_kwh, effective_from, effective_to, status, notes, created_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
+      id, tariffName, propertyId, rate, effectiveFrom, effectiveTo || null, status, notes || null, userName
+    ]);
+
+    await pool.query(`
+      INSERT INTO audit_logs (id, user_id, user_name, action, entity, entity_id, details, timestamp)
+      VALUES (?, ?, ?, 'CREATE_TARIFF', 'ELECTRICITY_TARIFF', ?, ?, NOW())
+    `, [
+      `aud-${Date.now()}`, userId, userName, id,
+      `إضافة تعرفة كهرباء جديدة [${tariffName}] بسعر ${rate} ر.ي/ك.و تسري من ${effectiveFrom}`
+    ]);
+
+    res.status(201).json({
+      id,
+      tariffName,
+      ratePerKwh: rate,
+      message: 'تم إضافة تعرفة الكهرباء بنجاح'
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.put('/electricity/tariffs/:id', async (req: Request, res: Response) => {
+  try {
+    const { userRole, userId, userName } = getRequestUser(req);
+
+    const { id } = req.params;
+    const {
+      tariffName,
+      propertyId,
+      ratePerKwh,
+      effectiveFrom,
+      effectiveTo,
+      status,
+      notes
+    } = req.body;
+
+    const pool = await getPool();
+    const [existing]: any = await pool.query('SELECT * FROM electricity_rates WHERE id = ?', [id]);
+    if (existing.length === 0) {
+      return res.status(404).json({ error: 'تعرفة الكهرباء غير موجودة' });
+    }
+
+    const cur = existing[0];
+    const rate = ratePerKwh ? Number(ratePerKwh) : Number(cur.rate_per_kwh);
+
+    await pool.query(`
+      UPDATE electricity_rates SET
+        tariff_name = ?,
+        property_id = ?,
+        rate_per_kwh = ?,
+        effective_from = ?,
+        effective_to = ?,
+        status = ?,
+        notes = ?
+      WHERE id = ?
+    `, [
+      tariffName || cur.tariff_name,
+      propertyId || cur.property_id,
+      rate,
+      effectiveFrom || cur.effective_from,
+      effectiveTo !== undefined ? effectiveTo : cur.effective_to,
+      status || cur.status,
+      notes !== undefined ? notes : cur.notes,
+      id
+    ]);
+
+    await pool.query(`
+      INSERT INTO audit_logs (id, user_id, user_name, action, entity, entity_id, details, timestamp)
+      VALUES (?, ?, ?, 'UPDATE_TARIFF', 'ELECTRICITY_TARIFF', ?, ?, NOW())
+    `, [
+      `aud-${Date.now()}`, userId, userName, id,
+      `تحديث تعرفة الكهرباء [${id}] - السعر الجديد ${rate} ر.ي/ك.و`
+    ]);
+
+    res.json({ message: 'تم تحديث تعرفة الكهرباء بنجاح' });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// E. Meter Readings Management
 router.get('/electricity/readings', async (req: Request, res: Response) => {
   try {
     const pool = await getPool();
-    const [rows]: any = await pool.query('SELECT * FROM electricity_readings ORDER BY created_at DESC LIMIT 20');
+    const { propertyId, buildingId, unitId, meterId, status, periodMonth, search } = req.query;
+
+    let query = `
+      SELECT 
+        rd.*,
+        p.name as property_name,
+        p.code as property_code,
+        b.name as building_name,
+        u.unit_number as joined_unit_number,
+        COALESCE(rd.tenant_name, u.current_tenant_name, '') as final_tenant_name
+      FROM electricity_readings rd
+      LEFT JOIN units u ON rd.unit_id = u.id
+      LEFT JOIN properties p ON COALESCE(rd.property_id, u.property_id) = p.id
+      LEFT JOIN buildings b ON COALESCE(rd.building_id, u.building_id) = b.id
+      WHERE 1=1
+    `;
+    const params: any[] = [];
+
+    if (propertyId && propertyId !== 'ALL') {
+      query += ' AND (rd.property_id = ? OR u.property_id = ?)';
+      params.push(propertyId, propertyId);
+    }
+    if (buildingId && buildingId !== 'ALL') {
+      query += ' AND (rd.building_id = ? OR u.building_id = ?)';
+      params.push(buildingId, buildingId);
+    }
+    if (unitId && unitId !== 'ALL') {
+      query += ' AND rd.unit_id = ?';
+      params.push(unitId);
+    }
+    if (meterId && meterId !== 'ALL') {
+      query += ' AND (rd.meter_id = ? OR rd.meter_number = ?)';
+      params.push(meterId, meterId);
+    }
+    if (status && status !== 'ALL') {
+      query += ' AND rd.status = ?';
+      params.push(status);
+    }
+    if (periodMonth && periodMonth !== 'ALL') {
+      query += ' AND rd.reading_period_month = ?';
+      params.push(periodMonth);
+    }
+    if (search) {
+      query += ' AND (rd.meter_number LIKE ? OR rd.unit_number LIKE ? OR rd.tenant_name LIKE ? OR rd.reading_period_month LIKE ?)';
+      const s = `%${search}%`;
+      params.push(s, s, s, s);
+    }
+
+    query += ' ORDER BY rd.reading_date DESC, rd.created_at DESC';
+
+    const [rows]: any = await pool.query(query, params);
     res.json(rows.map((r: any) => ({
       id: r.id,
-      unitId: r.unit_id,
-      unitNumber: r.unit_number,
+      meterId: r.meter_id,
       meterNumber: r.meter_number,
+      unitId: r.unit_id,
+      unitNumber: r.unit_number || r.joined_unit_number,
+      propertyId: r.property_id,
+      propertyName: r.property_name,
+      propertyCode: r.property_code,
+      buildingId: r.building_id,
+      buildingName: r.building_name,
+      tenantId: r.tenant_id,
+      tenantName: r.final_tenant_name,
+      contractId: r.contract_id,
+      period: r.reading_period_month,
       readingPeriodMonth: r.reading_period_month,
+      billingPeriodStart: formatSqlDate(r.billing_period_start),
+      billingPeriodEnd: formatSqlDate(r.billing_period_end),
+      readingDate: formatSqlDate(r.reading_date) || '',
       previousReading: Number(r.previous_reading),
       currentReading: Number(r.current_reading),
+      consumption: Number(r.consumption_kwh),
       consumptionKwh: Number(r.consumption_kwh),
+      multiplier: Number(r.multiplier || 1),
+      ratePerKWh: Number(r.rate_per_kwh),
       ratePerKwh: Number(r.rate_per_kwh),
+      tariffId: r.tariff_id,
+      tariffName: r.tariff_name,
       totalAmount: Number(r.total_amount),
-      readingDate: r.reading_date,
-      status: r.status
+      isResetOrReplaced: Boolean(r.is_reset_or_replacement),
+      isResetOrReplacement: Boolean(r.is_reset_or_replacement),
+      resetReason: r.reset_reason,
+      status: r.status,
+      invoiceId: r.invoice_id,
+      invoiceNumber: r.invoice_number,
+      recordedBy: r.recorded_by,
+      postedAt: formatSqlDateTime(r.posted_at),
+      postedBy: r.posted_by,
+      notes: r.notes,
+      createdAt: formatSqlDateTime(r.created_at)
     })));
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -5272,53 +6107,1126 @@ router.get('/electricity/readings', async (req: Request, res: Response) => {
 
 router.post('/electricity/readings', async (req: Request, res: Response) => {
   try {
+    const { userRole, userId, userName } = getRequestUser(req);
+
     const {
+      meterId,
       unitId,
-      unitNumber,
-      meterNumber,
       readingPeriodMonth,
-      previousReading,
+      periodMonth,
+      billingPeriodDate,
+      billingPeriodStart,
+      billingPeriodEnd,
       currentReading,
-      ratePerKwh,
-      readingDate,
-      isResetOrReplacement,
-      resetReason
+      readingDate = new Date().toISOString().slice(0, 10),
+      isResetOrReplacement = false,
+      resetReason,
+      notes
     } = req.body;
 
-    const prev = Number(previousReading);
-    const curr = Number(currentReading);
-    const rate = Number(ratePerKwh || 300);
+    const periodInput = (readingPeriodMonth || periodMonth || billingPeriodDate || '').trim();
 
-    if (curr < prev && !isResetOrReplacement) {
-      res.status(400).json({
-        error: 'قراءة العداد الحالية أقل من السابقة! لا يمكن الحفظ إلا في حالة تصفير أو استبدال العداد مع توضيح السبب.'
-      });
-      return;
+    if (!unitId) {
+      return res.status(400).json({ error: 'يجب تحديد الوحدة العقارية لتسجيل القراءة' });
+    }
+    if (!periodInput) {
+      return res.status(400).json({ error: 'شهر/فترة الفوترة مطلوبة (مثال: سبتمبر 2026 أو تاريخ صالح)' });
+    }
+    if (currentReading === undefined || currentReading === null || isNaN(Number(currentReading))) {
+      return res.status(400).json({ error: 'يرجى إدخال القراءة الحالية للعداد بشكل صحيح' });
     }
 
-    const consumption = isResetOrReplacement ? curr : Math.max(0, curr - prev);
-    const totalAmount = consumption * rate;
-    const id = `elec-${Date.now()}`;
+    // Validate reading registration date
+    const cleanReadingDate = (readingDate || '').trim();
+    if (!cleanReadingDate || isNaN(Date.parse(cleanReadingDate))) {
+      return res.status(400).json({ error: 'تاريخ تسجيل القراءة غير صالح (يجب أن يكون تاريخاً صحيحاً)' });
+    }
+
+    // Determine normalized reading period and billing period dates
+    const arabicMonths = ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'];
+    let finalPeriodMonth = periodInput;
+    let finalPeriodStart = billingPeriodStart || (billingPeriodDate ? `${billingPeriodDate.slice(0, 7)}-01` : null);
+    let finalPeriodEnd = billingPeriodEnd || null;
+
+    if (/^\d{4}-\d{2}(-\d{2})?$/.test(finalPeriodMonth)) {
+      const parts = finalPeriodMonth.split('-');
+      const y = parseInt(parts[0], 10);
+      const m = parseInt(parts[1], 10);
+      if (m >= 1 && m <= 12) {
+        finalPeriodMonth = `${arabicMonths[m - 1]} ${y}`;
+        if (!finalPeriodStart) finalPeriodStart = `${y}-${String(m).padStart(2, '0')}-01`;
+        if (!finalPeriodEnd) {
+          const lastDay = new Date(y, m, 0).getDate();
+          finalPeriodEnd = `${y}-${String(m).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+        }
+      }
+    }
+
+    if (!finalPeriodStart && cleanReadingDate) {
+      const rd = new Date(cleanReadingDate);
+      const y = rd.getFullYear();
+      const m = rd.getMonth() + 1;
+      finalPeriodStart = `${y}-${String(m).padStart(2, '0')}-01`;
+      const lastDay = new Date(y, m, 0).getDate();
+      finalPeriodEnd = `${y}-${String(m).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+    }
 
     const pool = await getPool();
-    await pool.query(`
-      INSERT INTO electricity_readings 
-      (id, unit_id, unit_number, meter_number, reading_period_month, previous_reading, current_reading, consumption_kwh, rate_per_kwh, total_amount, reading_date, is_reset_or_replacement, reset_reason, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'BILLED')
-    `, [
-      id, unitId, unitNumber, meterNumber, readingPeriodMonth, prev, curr,
-      consumption, rate, totalAmount, readingDate || new Date().toISOString().slice(0, 10),
-      isResetOrReplacement ? 1 : 0, resetReason || null
-    ]);
+
+    // 1. Fetch unit, property, building, tenant details
+    const [uRows]: any = await pool.query(`
+      SELECT 
+        u.*,
+        p.name as property_name,
+        p.code as property_code,
+        b.name as building_name
+      FROM units u
+      LEFT JOIN properties p ON u.property_id = p.id
+      LEFT JOIN buildings b ON u.building_id = b.id
+      WHERE u.id = ?
+    `, [unitId]);
+
+    if (uRows.length === 0) {
+      return res.status(404).json({ error: 'الوحدة العقارية غير موجودة' });
+    }
+    const unit = uRows[0];
+
+    // 2. Fetch meter
+    let meter: any = null;
+    if (meterId) {
+      const [mRows]: any = await pool.query('SELECT * FROM electricity_meters WHERE id = ?', [meterId]);
+      if (mRows.length > 0) meter = mRows[0];
+    }
+    if (!meter && unit.electricity_meter_number) {
+      const [mRows]: any = await pool.query('SELECT * FROM electricity_meters WHERE meter_number = ?', [unit.electricity_meter_number]);
+      if (mRows.length > 0) meter = mRows[0];
+    }
+
+    const meterNumber = meter ? meter.meter_number : (unit.electricity_meter_number || `MTR-${unit.unit_number}`);
+    const meterIdFinal = meter ? meter.id : null;
+    const multiplier = Number(meter?.multiplier || 1);
+
+    // 3. Prevent duplicate reading for the same meter and period month
+    const [dupReading]: any = await pool.query(
+      `SELECT id FROM electricity_readings 
+       WHERE (meter_id = ? OR meter_number = ?) 
+         AND (reading_period_month = ? OR (billing_period_start IS NOT NULL AND billing_period_start = ?))`,
+      [meterIdFinal, meterNumber, finalPeriodMonth, finalPeriodStart || '1970-01-01']
+    );
+    if (dupReading.length > 0) {
+      return res.status(400).json({
+        error: `توجد قراءة مسجلة مسبقاً لهذا العداد [${meterNumber}] عن فترة [${finalPeriodMonth}]. لا يمكن تسجيل قراءتين لنفس الفترة.`
+      });
+    }
+
+    // 4. Determine previous reading
+    const prev = Number(req.body.previousReading !== undefined ? req.body.previousReading : (meter?.current_reading || 0));
+    const curr = Number(currentReading);
+
+    // 5. Critical Reading Validation
+    if (curr < prev) {
+      if (!isResetOrReplacement) {
+        return res.status(400).json({
+          error: `خطأ في القراءة: القراءة الحالية (${curr.toLocaleString()}) أقل من القراءة السابقة (${prev.toLocaleString()})! لا يمكن قبول تناقص القراءة إلا في حالة استبدال/تصفير معتمد مع ذكر السبب.`
+        });
+      }
+      if (!resetReason || !resetReason.trim()) {
+        return res.status(400).json({
+          error: 'يجب تقديم سبب رسمي موثق لقبول قراءة أقل من السابقة (تصفير أو استبدال عداد).'
+        });
+      }
+      // Require supervisor permissions
+      const canOverride = ['SUPER_ADMIN', 'PROPERTY_MANAGER'].includes(userRole);
+      if (!canOverride) {
+        return res.status(403).json({
+          error: 'غير مصرح: اعتماد قراءة استثنائية (تصفير/استبدال) يتطلب صلاحية مدير النظام أو مدير الأملاك'
+        });
+      }
+    }
+
+    // 6. Calculate consumption
+    const rawDiff = isResetOrReplacement ? curr : Math.max(0, curr - prev);
+    const consumptionKwh = rawDiff * multiplier;
+
+    // 7. Find applicable tariff effective on readingDate
+    const [tariffRows]: any = await pool.query(`
+      SELECT * FROM electricity_rates 
+      WHERE (property_id = ? OR property_id = 'ALL')
+        AND status = 'ACTIVE'
+        AND effective_from <= ?
+        AND (effective_to IS NULL OR effective_to >= ?)
+      ORDER BY (property_id = ?) DESC, effective_from DESC
+      LIMIT 1
+    `, [unit.property_id, readingDate, readingDate, unit.property_id]);
+
+    const activeTariff = tariffRows[0];
+    const ratePerKwh = Number(req.body.ratePerKwh || activeTariff?.rate_per_kwh || 300);
+    const tariffId = activeTariff?.id || 'trf-default';
+    const tariffName = activeTariff?.tariff_name || 'تعرفة الكهرباء القياسية';
+
+    // 8. Safe total amount calculation
+    const totalAmount = Math.round(consumptionKwh * ratePerKwh * 100) / 100;
+    const readingId = `rdg-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`;
+
+    const result = await executeTransaction(async (conn) => {
+      // Insert reading
+      await conn.query(`
+        INSERT INTO electricity_readings 
+        (id, meter_id, unit_id, unit_number, property_id, building_id, tenant_id, tenant_name, contract_id, meter_number, reading_period_month, billing_period_start, billing_period_end, previous_reading, current_reading, consumption_kwh, multiplier, rate_per_kwh, tariff_id, tariff_name, total_amount, reading_date, is_reset_or_replacement, reset_reason, status, recorded_by, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'UNBILLED', ?, ?)
+      `, [
+        readingId,
+        meterIdFinal,
+        unit.id,
+        unit.unit_number,
+        unit.property_id,
+        unit.building_id,
+        unit.current_tenant_id || null,
+        unit.current_tenant_name || null,
+        unit.current_contract_id || null,
+        meterNumber,
+        finalPeriodMonth,
+        finalPeriodStart || null,
+        finalPeriodEnd || null,
+        prev,
+        curr,
+        consumptionKwh,
+        multiplier,
+        ratePerKwh,
+        tariffId,
+        tariffName,
+        totalAmount,
+        cleanReadingDate,
+        isResetOrReplacement ? 1 : 0,
+        resetReason || null,
+        userName,
+        notes || null
+      ]);
+
+      // Update meter's current reading and previous reading
+      if (meterIdFinal) {
+        await conn.query(`
+          UPDATE electricity_meters 
+          SET previous_reading = ?, current_reading = ?
+          WHERE id = ?
+        `, [prev, curr, meterIdFinal]);
+      }
+
+      // Audit Log
+      await conn.query(`
+        INSERT INTO audit_logs (id, user_id, user_name, action, entity, entity_id, details, timestamp)
+        VALUES (?, ?, ?, 'RECORD_READING', 'ELECTRICITY_READING', ?, ?, NOW())
+      `, [
+        `aud-${Date.now()}`, userId, userName, readingId,
+        `تسجيل قراءة كهرباء للعداد ${meterNumber} - وحدة ${unit.unit_number}: سابقة ${prev}، حالية ${curr}، استهلاك ${consumptionKwh} ك.و بمبلغ ${totalAmount.toLocaleString()} ر.ي`
+      ]);
+
+      return {
+        id: readingId,
+        consumptionKwh,
+        totalAmount,
+        ratePerKwh,
+        meterNumber
+      };
+    });
 
     res.status(201).json({
-      id,
-      consumptionKwh: consumption,
-      totalAmount,
-      ratePerKwh: rate
+      message: 'تم تسجيل القراءة بنجاح واحتساب الاستهلاك والمبلغ المستحق',
+      ...result
     });
   } catch (err: any) {
     res.status(400).json({ error: err.message });
+  }
+});
+
+router.put('/electricity/readings/:id', async (req: Request, res: Response) => {
+  try {
+    const { userRole, userId, userName } = getRequestUser(req);
+
+    const { id } = req.params;
+    const { currentReading, ratePerKwh, readingDate, notes } = req.body;
+
+    const pool = await getPool();
+    const [existing]: any = await pool.query('SELECT * FROM electricity_readings WHERE id = ?', [id]);
+    if (existing.length === 0) {
+      return res.status(404).json({ error: 'القراءة غير موجودة' });
+    }
+
+    const rd = existing[0];
+    if (rd.status === 'BILLED') {
+      const canEditBilled = ['SUPER_ADMIN', 'ACCOUNTANT'].includes(userRole);
+      if (!canEditBilled) {
+        return res.status(403).json({ error: 'لا يمكن تعديل قراءة تم ترحيلها وإصدار فاتورة لها إلا من خلال المشرف المالي' });
+      }
+    }
+
+    const prev = Number(rd.previous_reading);
+    const curr = currentReading !== undefined ? Number(currentReading) : Number(rd.current_reading);
+    const multiplier = Number(rd.multiplier || 1);
+    const rate = ratePerKwh !== undefined ? Number(ratePerKwh) : Number(rd.rate_per_kwh);
+
+    if (curr < prev && !rd.is_reset_or_replacement) {
+      return res.status(400).json({ error: 'القراءة الحالية لا يمكن أن تكون أقل من القراءة السابقة' });
+    }
+
+    const consumptionKwh = (rd.is_reset_or_replacement ? curr : (curr - prev)) * multiplier;
+    const totalAmount = Math.round(consumptionKwh * rate * 100) / 100;
+
+    await executeTransaction(async (conn) => {
+      await conn.query(`
+        UPDATE electricity_readings SET
+          current_reading = ?,
+          consumption_kwh = ?,
+          rate_per_kwh = ?,
+          total_amount = ?,
+          reading_date = ?,
+          notes = ?
+        WHERE id = ?
+      `, [
+        curr, consumptionKwh, rate, totalAmount,
+        readingDate || rd.reading_date,
+        notes !== undefined ? notes : rd.notes,
+        id
+      ]);
+
+      if (rd.meter_id) {
+        await conn.query('UPDATE electricity_meters SET current_reading = ? WHERE id = ?', [curr, rd.meter_id]);
+      }
+
+      await conn.query(`
+        INSERT INTO audit_logs (id, user_id, user_name, action, entity, entity_id, details, timestamp)
+        VALUES (?, ?, ?, 'EDIT_READING', 'ELECTRICITY_READING', ?, ?, NOW())
+      `, [
+        `aud-${Date.now()}`, userId, userName, id,
+        `تعديل قراءة الكهرباء ${id} إلى ${curr} ك.و بمبلغ ${totalAmount} ر.ي`
+      ]);
+    });
+
+    res.json({ message: 'تم تحديث القراءة بنجاح', consumptionKwh, totalAmount });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.delete('/electricity/readings/:id', async (req: Request, res: Response) => {
+  try {
+    const { userRole, userId, userName } = getRequestUser(req);
+
+    const { id } = req.params;
+    const allowedRoles = ['SUPER_ADMIN', 'PROPERTY_MANAGER'];
+    if (!allowedRoles.includes(userRole)) {
+      return res.status(403).json({ error: 'غير مصرح: حذف قراءات العدادات مقتصر على مدير النظام أو مدير الأملاك' });
+    }
+
+    const pool = await getPool();
+    const [existing]: any = await pool.query('SELECT * FROM electricity_readings WHERE id = ?', [id]);
+    if (existing.length === 0) {
+      return res.status(404).json({ error: 'القراءة غير موجودة' });
+    }
+
+    const rd = existing[0];
+    if (rd.status === 'BILLED' || rd.invoice_id) {
+      return res.status(400).json({ 
+        error: `لا يمكن حذف هذه القراءة لوجود تاريخ مالي وفاتورة مرحلة مرتبطة بها (رقم الفاتورة: ${rd.invoice_number || rd.invoice_id}). يجب إلغاء أو عكس الفاتورة أولاً من شاشة الفوترة.` 
+      });
+    }
+
+    // Check if any invoice references this reading
+    const [invRefs]: any = await pool.query(
+      "SELECT id, invoice_number FROM invoices WHERE (id = ? OR notes LIKE ?) AND status NOT IN ('CANCELLED', 'REVERSED')",
+      [rd.invoice_id || 'none', `%${rd.id}%`]
+    );
+    if (invRefs.length > 0) {
+      return res.status(400).json({
+        error: `لا يمكن حذف هذه القراءة نظراً لوجود قيود مالية وفاتورة محاسبية نشطة مرتبطة بها برقم [${invRefs[0].invoice_number}]. يرجى إلغاء أو عكس الفاتورة أولاً.`
+      });
+    }
+
+    await pool.query('DELETE FROM electricity_readings WHERE id = ?', [id]);
+
+    await pool.query(`
+      INSERT INTO audit_logs (id, user_id, user_name, action, entity, entity_id, details, timestamp)
+      VALUES (?, ?, ?, 'DELETE_READING', 'ELECTRICITY_READING', ?, ?, NOW())
+    `, [
+      `aud-${Date.now()}`, userId, userName, id,
+      `حذف مسودة قراءة الكهرباء للعداد ${rd.meter_number} عن دورة ${rd.reading_period_month}`
+    ]);
+
+    res.json({ message: 'تم حذف قراءة العداد بنجاح' });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// F. Electricity Billing & Tenant Ledger Posting (Transaction-Safe)
+router.post('/electricity/billing/generate', async (req: Request, res: Response) => {
+  try {
+    const { userRole, userId, userName } = getRequestUser(req);
+
+    const { readingIds } = req.body;
+    if (!readingIds || !Array.isArray(readingIds) || readingIds.length === 0) {
+      return res.status(400).json({ error: 'يجب تحديد قراءة واحدة على الأقل لإصدار الفاتورة والترحيل' });
+    }
+
+    const allowedRoles = ['SUPER_ADMIN', 'PROPERTY_MANAGER', 'ACCOUNTANT'];
+    if (!allowedRoles.includes(userRole)) {
+      return res.status(403).json({ error: 'غير مصرح: ترحيل فواتير الكهرباء إلى الذمم مقتصر على مدير النظام، مدير الأملاك، أو المحاسب' });
+    }
+
+    const result = await executeTransaction(async (conn) => {
+      const billedInvoices: any[] = [];
+      let totalPostedAmount = 0;
+      const today = new Date().toISOString().slice(0, 10);
+      const datePart = today.replace(/-/g, '').slice(2);
+
+      for (const readingId of readingIds) {
+        // Fetch reading with lock
+        const [rRows]: any = await conn.query('SELECT * FROM electricity_readings WHERE id = ? FOR UPDATE', [readingId]);
+        if (rRows.length === 0) {
+          throw new Error(`قراءة الكهرباء [${readingId}] غير موجودة`);
+        }
+
+        const rd = rRows[0];
+        if (rd.status === 'BILLED') {
+          throw new Error(`القراءة [${rd.meter_number} - ${rd.reading_period_month}] مفوترة ومرحلة مسبقاً`);
+        }
+
+        const totalAmount = Number(rd.total_amount || 0);
+        if (totalAmount <= 0) {
+          throw new Error(`قيمة القراءة [${rd.meter_number}] تساوي صفر، لا يمكن إصدار فاتورة بمبلغ صفر`);
+        }
+
+        // Fetch unit and property
+        const [uRows]: any = await conn.query(`
+          SELECT 
+            u.*,
+            p.name as property_name,
+            c.id as active_contract_id,
+            c.tenant_id as contract_tenant_id,
+            c.tenant_name as contract_tenant_name
+          FROM units u
+          LEFT JOIN properties p ON u.property_id = p.id
+          LEFT JOIN contracts c ON u.id = c.unit_id AND c.status = 'ACTIVE'
+          WHERE u.id = ?
+          FOR UPDATE
+        `, [rd.unit_id]);
+
+        if (uRows.length === 0) {
+          throw new Error(`الوحدة المرتبطة بالقراءة غير موجودة في النظام`);
+        }
+
+        const unit = uRows[0];
+
+        // 1. CRITICAL TENANT VALIDATION
+        const tenantId = rd.tenant_id || unit.current_tenant_id || unit.contract_tenant_id;
+        if (!tenantId) {
+          throw new Error('لا يمكن إصدار فاتورة الكهرباء. العداد أو الوحدة غير مرتبط بمستأجر نشط صالح، ولا يمكن ترحيل الفاتورة محاسبياً.');
+        }
+
+        const [tRows]: any = await conn.query('SELECT * FROM tenants WHERE id = ? FOR UPDATE', [tenantId]);
+        if (tRows.length === 0) {
+          throw new Error('لا يمكن إصدار فاتورة الكهرباء. العداد أو الوحدة غير مرتبط بمستأجر نشط صالح، ولا يمكن ترحيل الفاتورة محاسبياً.');
+        }
+        const tenant = tRows[0];
+
+        // 2. CRITICAL PREVIOUS READING & CONTINUITY VALIDATION
+        const prevReading = Number(rd.previous_reading);
+        const currReading = Number(rd.current_reading);
+
+        if (rd.previous_reading === null || rd.previous_reading === undefined || isNaN(prevReading)) {
+          throw new Error('لا يمكن إصدار فاتورة الكهرباء. القراءة السابقة غير صالحة أو غير مرتبطة بقراءة سابقة صحيحة.');
+        }
+
+        // Meter validation
+        let meterId = rd.meter_id;
+        if (!meterId && unit.id) {
+          const [mRows]: any = await conn.query('SELECT id FROM electricity_meters WHERE unit_id = ? AND status = "ACTIVE" LIMIT 1', [unit.id]);
+          if (mRows.length > 0) meterId = mRows[0].id;
+        }
+
+        if (meterId) {
+          const [mRow]: any = await conn.query('SELECT * FROM electricity_meters WHERE id = ?', [meterId]);
+          if (mRow.length === 0) {
+            throw new Error('لا يمكن إصدار فاتورة الكهرباء. العداد غير موجود في النظام.');
+          }
+          const meter = mRow[0];
+          if (meter.unit_id && meter.unit_id !== unit.id) {
+            throw new Error(`العداد [${meter.meter_number}] غير مخصص للوحدة [${unit.unit_number}].`);
+          }
+
+          // Fetch prior readings for this meter
+          const [priorReadings]: any = await conn.query(`
+            SELECT id, current_reading, reading_date, status, created_at 
+            FROM electricity_readings 
+            WHERE meter_id = ? AND id != ?
+            ORDER BY reading_date ASC, created_at ASC
+          `, [meterId, rd.id]);
+
+          if (priorReadings.length === 0) {
+            // First reading for this meter: previous_reading must match initial_reading or 0 or reset
+            const expectedInitial = Number(meter.initial_reading || 0);
+            if (!rd.is_reset_or_replacement && prevReading !== expectedInitial && prevReading !== 0) {
+              throw new Error('لا يمكن إصدار فاتورة الكهرباء. القراءة السابقة غير صالحة أو غير مرتبطة بقراءة سابقة صحيحة.');
+            }
+          } else {
+            // Subsequent readings: check continuity with previous readings
+            const preceding = priorReadings
+              .filter((p: any) => new Date(p.reading_date || p.created_at) <= new Date(rd.reading_date || rd.created_at))
+              .pop();
+
+            if (preceding) {
+              const expectedPrev = Number(preceding.current_reading);
+              if (!rd.is_reset_or_replacement && prevReading !== expectedPrev) {
+                throw new Error('لا يمكن إصدار فاتورة الكهرباء. القراءة السابقة غير صالحة أو غير مرتبطة بقراءة سابقة صحيحة.');
+              }
+            } else if (!rd.is_reset_or_replacement && prevReading === 0 && Number(meter.initial_reading || 0) > 0) {
+              throw new Error('لا يمكن إصدار فاتورة الكهرباء. القراءة السابقة غير صالحة أو غير مرتبطة بقراءة سابقة صحيحة.');
+            }
+          }
+        }
+
+        // Check current reading >= previous reading
+        if (currReading < prevReading && !rd.is_reset_or_replacement) {
+          throw new Error('لا يمكن إصدار فاتورة الكهرباء. القراءة الحالية أقل من القراءة السابقة دون تفعيل تصفير أو استبدال العداد مع كتابة السبب.');
+        }
+
+        // Check duplicate invoice prevention for same unit + period + account_type (excluding cancelled/reversed)
+        const [existInv]: any = await conn.query(`
+          SELECT id, invoice_number FROM invoices 
+          WHERE unit_id = ? AND period_month = ? AND account_type = 'ELECTRICITY' AND status NOT IN ('CANCELLED', 'REVERSED')
+        `, [unit.id, rd.reading_period_month]);
+
+        if (existInv.length > 0) {
+          throw new Error(`تم إصدار فاتورة كهرباء مسبقاً برقم [${existInv[0].invoice_number}] لنفس الوحدة عن دورة [${rd.reading_period_month}]`);
+        }
+
+        // Compute balances
+        const currentBal = Number(tenant.current_balance || 0);
+        const elecBal = Number(tenant.electricity_balance || 0);
+        const newBal = currentBal + totalAmount;
+        const newElecBal = elecBal + totalAmount;
+
+        const randomSuffix = Math.floor(1000 + Math.random() * 9000);
+        const invoiceNumber = `INV-EL-${datePart}-${randomSuffix}`;
+        // CRITICAL FIX: Use timestamp + randomSuffix so re-billing a cancelled reading never causes PRIMARY key collision!
+        const invoiceId = `inv-el-${Date.now()}-${randomSuffix}`;
+        const ledgerId = `ledg-el-${Date.now()}-${randomSuffix}`;
+        const desc = `فاتورة استهلاك كهرباء - دورة ${rd.reading_period_month} - عداد ${rd.meter_number} - استهلاك ${rd.consumption_kwh} ك.و (سعر ${rd.rate_per_kwh} ر.ي) - وحدة ${unit.unit_number}`;
+
+        // 1. Create Invoice
+        await conn.query(`
+          INSERT INTO invoices 
+          (id, invoice_number, tenant_id, tenant_name, contract_id, property_id, property_name, unit_id, unit_number, account_type, period_month, base_rent, additional_charges, discount, total_amount, paid_amount, remaining_amount, issue_date, due_date, billing_period_start, billing_period_end, status, notes)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ELECTRICITY', ?, 0.00, ?, 0.00, ?, 0.00, ?, ?, ?, ?, ?, 'UNPAID', ?)
+        `, [
+          invoiceId,
+          invoiceNumber,
+          tenant.id,
+          tenant.name,
+          rd.contract_id || unit.current_contract_id || unit.active_contract_id || null,
+          unit.property_id,
+          unit.property_name,
+          unit.id,
+          unit.unit_number,
+          rd.reading_period_month,
+          totalAmount,
+          totalAmount,
+          totalAmount,
+          today,
+          today,
+          rd.billing_period_start || today,
+          rd.billing_period_end || today,
+          desc
+        ]);
+
+        // 2. Insert into tenant_ledger (Real Debit entry)
+        await conn.query(`
+          INSERT INTO tenant_ledger 
+          (id, tenant_id, date, reference, account_type, debit, credit, balance_after, description, user_id)
+          VALUES (?, ?, ?, ?, 'ELECTRICITY', ?, 0.00, ?, ?, ?)
+        `, [
+          ledgerId,
+          tenant.id,
+          today,
+          invoiceNumber,
+          totalAmount,
+          newBal,
+          desc,
+          userId
+        ]);
+
+        // 3. Update tenant balances
+        await conn.query(`
+          UPDATE tenants 
+          SET current_balance = ?, electricity_balance = ?
+          WHERE id = ?
+        `, [newBal, newElecBal, tenant.id]);
+
+        // 4. Update reading status
+        await conn.query(`
+          UPDATE electricity_readings 
+          SET status = 'BILLED', invoice_id = ?, invoice_number = ?, posted_at = NOW(), posted_by = ?
+          WHERE id = ?
+        `, [invoiceId, invoiceNumber, userName, rd.id]);
+
+        // 5. Update property outstanding
+        await conn.query(`
+          UPDATE properties 
+          SET total_outstanding_rent = total_outstanding_rent + ?
+          WHERE id = ?
+        `, [totalAmount, unit.property_id]);
+
+        // 6. Audit Log
+        await conn.query(`
+          INSERT INTO audit_logs (id, user_id, user_name, action, entity, entity_id, details, timestamp)
+          VALUES (?, ?, ?, 'GENERATE_ELECTRICITY_INVOICE', 'INVOICE', ?, ?, NOW())
+        `, [
+          `aud-${Date.now()}-${randomSuffix}`, userId, userName, invoiceId,
+          `إصدار فاتورة كهرباء ${invoiceNumber} بمبلغ ${totalAmount.toLocaleString()} ر.ي للمستأجر ${tenant.name} وترحيلها لدفتر الأستاذ`
+        ]);
+
+        billedInvoices.push({
+          readingId: rd.id,
+          invoiceId,
+          invoiceNumber,
+          tenantName: tenant.name,
+          unitNumber: unit.unit_number,
+          propertyName: unit.property_name,
+          totalAmount
+        });
+        totalPostedAmount += totalAmount;
+      }
+
+      return {
+        billedInvoices,
+        totalPostedAmount,
+        count: billedInvoices.length
+      };
+    });
+
+    res.status(200).json({
+      message: `تم إصدار وترحيل ${result.count} فاتورة كهرباء بنجاح إلى دفاتر الذمم المالية`,
+      ...result
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// G1. Cancel Electricity Invoice (Real Accounting Reversal + Reading unlinked)
+router.post('/electricity/invoices/:id/cancel', async (req: Request, res: Response) => {
+  try {
+    const { userRole, userId, userName } = getRequestUser(req);
+    const { id } = req.params;
+    const { reason = 'إلغاء فاتورة كهرباء وإعادة القراءة إلى غير مفوترة' } = req.body;
+
+    const allowedRoles = ['SUPER_ADMIN', 'ACCOUNTANT'];
+    if (!allowedRoles.includes(userRole)) {
+      return res.status(403).json({ error: 'غير مصرح: إلغاء فواتير الكهرباء مقتصر على مدير النظام أو المحاسب' });
+    }
+
+    const result = await executeTransaction(async (conn) => {
+      const [invRows]: any = await conn.query('SELECT * FROM invoices WHERE id = ? FOR UPDATE', [id]);
+      if (invRows.length === 0) {
+        throw new Error('الفاتورة غير موجودة');
+      }
+
+      const inv = invRows[0];
+      if (inv.account_type !== 'ELECTRICITY') {
+        throw new Error('هذه الفاتورة ليست فاتورة كهرباء');
+      }
+      if (inv.status === 'CANCELLED') {
+        throw new Error('هذه الفاتورة ملغاة مسبقاً ولا يمكن إلغاؤها مجدداً');
+      }
+      if (inv.status === 'REVERSED') {
+        throw new Error('هذه الفاتورة معكوسة مسبقاً ولا يمكن إلغاؤها');
+      }
+
+      const amountToReverse = Number(inv.total_amount || 0);
+      const today = new Date().toISOString().slice(0, 10);
+
+      // Reversal in tenant ledger (Credit reversing entry)
+      const [tRows]: any = await conn.query('SELECT * FROM tenants WHERE id = ? FOR UPDATE', [inv.tenant_id]);
+      if (tRows.length > 0) {
+        const tenant = tRows[0];
+        const newBal = Math.max(0, Number(tenant.current_balance || 0) - amountToReverse);
+        const newElecBal = Math.max(0, Number(tenant.electricity_balance || 0) - amountToReverse);
+
+        const revLedgerId = `ledg-rev-el-${Date.now()}`;
+        await conn.query(`
+          INSERT INTO tenant_ledger 
+          (id, tenant_id, date, reference, account_type, debit, credit, balance_after, description, user_id)
+          VALUES (?, ?, ?, ?, 'ELECTRICITY', 0.00, ?, ?, ?, ?)
+        `, [
+          revLedgerId,
+          tenant.id,
+          today,
+          `REV-${inv.invoice_number}`,
+          amountToReverse,
+          newBal,
+          `إلغاء فاتورة كهرباء رقم ${inv.invoice_number} وقيد تسوية دائن. السبب: ${reason}`,
+          userId
+        ]);
+
+        await conn.query(`
+          UPDATE tenants 
+          SET current_balance = ?, electricity_balance = ?
+          WHERE id = ?
+        `, [newBal, newElecBal, tenant.id]);
+      }
+
+      // Mark invoice as CANCELLED
+      await conn.query(`
+        UPDATE invoices 
+        SET status = 'CANCELLED', remaining_amount = 0.00, cancelled_by = ?, cancelled_at = NOW(), cancellation_reason = ?
+        WHERE id = ?
+      `, [userName, reason, id]);
+
+      // Revert reading status to UNBILLED
+      await conn.query(`
+        UPDATE electricity_readings 
+        SET status = 'UNBILLED', invoice_id = NULL, invoice_number = NULL, posted_at = NULL, posted_by = NULL
+        WHERE invoice_id = ?
+      `, [id]);
+
+      // Update property outstanding
+      await conn.query(`
+        UPDATE properties 
+        SET total_outstanding_rent = GREATEST(0, total_outstanding_rent - ?)
+        WHERE id = ?
+      `, [amountToReverse, inv.property_id]);
+
+      // Audit Log
+      await conn.query(`
+        INSERT INTO audit_logs (id, user_id, user_name, action, entity, entity_id, details, timestamp)
+        VALUES (?, ?, ?, 'CANCEL_ELECTRICITY_INVOICE', 'INVOICE', ?, ?, NOW())
+      `, [
+        `aud-${Date.now()}`, userId, userName, id,
+        `إلغاء فاتورة الكهرباء ${inv.invoice_number} وعكس القيد المحاسبي بمبلغ ${amountToReverse} ر.ي. السبب: ${reason}`
+      ]);
+
+      return { invoiceNumber: inv.invoice_number, amount: amountToReverse };
+    });
+
+    res.json({ message: 'تم إلغاء فاتورة الكهرباء وعكس القيد بنجاح', ...result });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// G2. Reverse Electricity Invoice (Real Accounting Reversal with Status REVERSED)
+router.post('/electricity/invoices/:id/reverse', async (req: Request, res: Response) => {
+  try {
+    const { userRole, userId, userName } = getRequestUser(req);
+    const { id } = req.params;
+    const { reason = 'عكس ترحيل فاتورة كهرباء وإلغاء الأثر المالي' } = req.body;
+
+    const allowedRoles = ['SUPER_ADMIN', 'ACCOUNTANT'];
+    if (!allowedRoles.includes(userRole)) {
+      return res.status(403).json({ error: 'غير مصرح: عكس ترحيل فواتير الكهرباء مقتصر على مدير النظام أو المحاسب' });
+    }
+
+    const result = await executeTransaction(async (conn) => {
+      const [invRows]: any = await conn.query('SELECT * FROM invoices WHERE id = ? FOR UPDATE', [id]);
+      if (invRows.length === 0) {
+        throw new Error('الفاتورة غير موجودة');
+      }
+
+      const inv = invRows[0];
+      if (inv.account_type !== 'ELECTRICITY') {
+        throw new Error('هذه الفاتورة ليست فاتورة كهرباء');
+      }
+      if (inv.status === 'REVERSED') {
+        throw new Error('هذه الفاتورة تم عكس ترحيلها مسبقاً ولا يمكن تكرار العملية');
+      }
+      if (inv.status === 'CANCELLED') {
+        throw new Error('هذه الفاتورة ملغاة مسبقاً ولا يمكن عكسها');
+      }
+
+      const amountToReverse = Number(inv.total_amount || 0);
+      const today = new Date().toISOString().slice(0, 10);
+
+      // Reversal in tenant ledger (Credit reversing transaction)
+      const [tRows]: any = await conn.query('SELECT * FROM tenants WHERE id = ? FOR UPDATE', [inv.tenant_id]);
+      if (tRows.length > 0) {
+        const tenant = tRows[0];
+        const newBal = Math.max(0, Number(tenant.current_balance || 0) - amountToReverse);
+        const newElecBal = Math.max(0, Number(tenant.electricity_balance || 0) - amountToReverse);
+
+        const revLedgerId = `ledg-rev-el-${Date.now()}`;
+        await conn.query(`
+          INSERT INTO tenant_ledger 
+          (id, tenant_id, date, reference, account_type, debit, credit, balance_after, description, user_id)
+          VALUES (?, ?, ?, ?, 'ELECTRICITY', 0.00, ?, ?, ?, ?)
+        `, [
+          revLedgerId,
+          tenant.id,
+          today,
+          `REV-${inv.invoice_number}`,
+          amountToReverse,
+          newBal,
+          `عكس ترحيل فاتورة كهرباء رقم ${inv.invoice_number} بمبلغ ${amountToReverse} ر.ي. السبب: ${reason}`,
+          userId
+        ]);
+
+        await conn.query(`
+          UPDATE tenants 
+          SET current_balance = ?, electricity_balance = ?
+          WHERE id = ?
+        `, [newBal, newElecBal, tenant.id]);
+      }
+
+      // Mark invoice as REVERSED
+      await conn.query(`
+        UPDATE invoices 
+        SET status = 'REVERSED', remaining_amount = 0.00, cancelled_by = ?, cancelled_at = NOW(), cancellation_reason = ?
+        WHERE id = ?
+      `, [userName, reason, id]);
+
+      // Revert reading status to UNBILLED
+      await conn.query(`
+        UPDATE electricity_readings 
+        SET status = 'UNBILLED', invoice_id = NULL, invoice_number = NULL, posted_at = NULL, posted_by = NULL
+        WHERE invoice_id = ?
+      `, [id]);
+
+      // Update property outstanding
+      await conn.query(`
+        UPDATE properties 
+        SET total_outstanding_rent = GREATEST(0, total_outstanding_rent - ?)
+        WHERE id = ?
+      `, [amountToReverse, inv.property_id]);
+
+      // Audit Log
+      await conn.query(`
+        INSERT INTO audit_logs (id, user_id, user_name, action, entity, entity_id, details, timestamp)
+        VALUES (?, ?, ?, 'REVERSE_ELECTRICITY_INVOICE', 'INVOICE', ?, ?, NOW())
+      `, [
+        `aud-${Date.now()}`, userId, userName, id,
+        `عكس ترحيل فاتورة الكهرباء ${inv.invoice_number} وإعادة القراءة كغير مفوترة بمبلغ ${amountToReverse} ر.ي. السبب: ${reason}`
+      ]);
+
+      return { invoiceNumber: inv.invoice_number, amount: amountToReverse };
+    });
+
+    res.json({ message: 'تم عكس ترحيل فاتورة الكهرباء بنجاح وتسوية القيود المحاسبية', ...result });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// G3. Real Electricity Invoices Listing from MySQL with All Statuses
+router.get('/electricity/invoices', async (req: Request, res: Response) => {
+  try {
+    const pool = await getPool();
+    const { propertyId, status, periodMonth, search } = req.query;
+
+    let query = `
+      SELECT 
+        i.id,
+        i.invoice_number as invoiceNumber,
+        i.tenant_id as tenantId,
+        i.tenant_name as tenantName,
+        i.contract_id as contractId,
+        i.property_id as propertyId,
+        i.property_name as propertyName,
+        i.unit_id as unitId,
+        i.unit_number as unitNumber,
+        i.period_month as periodMonth,
+        i.total_amount as totalAmount,
+        i.paid_amount as paidAmount,
+        i.remaining_amount as remainingAmount,
+        i.issue_date as issueDate,
+        i.due_date as dueDate,
+        i.billing_period_start as billingPeriodStart,
+        i.billing_period_end as billingPeriodEnd,
+        i.status,
+        i.cancellation_reason as cancellationReason,
+        i.cancelled_by as cancelledBy,
+        i.cancelled_at as cancelledAt,
+        i.notes,
+        i.created_at as createdAt,
+        rd.id as readingId,
+        rd.meter_id as meterId,
+        rd.meter_number as meterNumber,
+        rd.previous_reading as previousReading,
+        rd.current_reading as currentReading,
+        rd.consumption_kwh as consumptionKwh,
+        rd.rate_per_kwh as ratePerKwh,
+        rd.multiplier,
+        rd.reading_date as readingDate,
+        rd.posted_at as postedAt,
+        rd.posted_by as postedBy
+      FROM invoices i
+      LEFT JOIN electricity_readings rd ON i.id = rd.invoice_id
+      WHERE i.account_type = 'ELECTRICITY'
+    `;
+    const params: any[] = [];
+
+    if (propertyId && propertyId !== 'ALL') {
+      query += ' AND i.property_id = ?';
+      params.push(propertyId);
+    }
+    if (periodMonth && periodMonth !== 'ALL') {
+      query += ' AND i.period_month = ?';
+      params.push(periodMonth);
+    }
+    if (status && status !== 'ALL') {
+      query += ' AND i.status = ?';
+      params.push(status);
+    }
+    if (search) {
+      query += ' AND (i.invoice_number LIKE ? OR i.tenant_name LIKE ? OR i.unit_number LIKE ? OR rd.meter_number LIKE ?)';
+      params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
+    }
+
+    query += ' ORDER BY i.created_at DESC';
+
+    const [rows]: any = await pool.query(query, params);
+    res.json(rows.map((r: any) => ({
+      ...r,
+      totalAmount: Number(r.totalAmount || 0),
+      paidAmount: Number(r.paidAmount || 0),
+      remainingAmount: Number(r.remainingAmount || 0),
+      consumptionKwh: Number(r.consumptionKwh || 0),
+      ratePerKwh: Number(r.ratePerKwh || 0),
+      previousReading: Number(r.previousReading || 0),
+      currentReading: Number(r.currentReading || 0),
+      multiplier: Number(r.multiplier || 1),
+      issueDate: formatSqlDate(r.issueDate),
+      dueDate: formatSqlDate(r.dueDate),
+      billingPeriodStart: formatSqlDate(r.billingPeriodStart),
+      billingPeriodEnd: formatSqlDate(r.billingPeriodEnd),
+      readingDate: formatSqlDate(r.readingDate),
+      postedAt: formatSqlDateTime(r.postedAt),
+      cancelledAt: formatSqlDateTime(r.cancelledAt),
+      createdAt: formatSqlDateTime(r.createdAt)
+    })));
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// H. Electricity Reports API
+router.get('/electricity/reports', async (req: Request, res: Response) => {
+  try {
+    const pool = await getPool();
+    const {
+      reportType = 'consumption',
+      propertyId,
+      buildingId,
+      unitId,
+      status,
+      startDate,
+      endDate,
+      periodMonth,
+      search
+    } = req.query;
+
+    if (reportType === 'meters') {
+      let query = `
+        SELECT 
+          m.*,
+          p.name as property_name,
+          p.code as property_code,
+          b.name as building_name,
+          u.unit_number,
+          u.type as unit_type,
+          u.current_tenant_name
+        FROM electricity_meters m
+        LEFT JOIN properties p ON m.property_id = p.id
+        LEFT JOIN buildings b ON m.building_id = b.id
+        LEFT JOIN units u ON m.unit_id = u.id
+        WHERE 1=1
+      `;
+      const params: any[] = [];
+      if (propertyId && propertyId !== 'ALL') { query += ' AND m.property_id = ?'; params.push(propertyId); }
+      if (buildingId && buildingId !== 'ALL') { query += ' AND m.building_id = ?'; params.push(buildingId); }
+      if (status && status !== 'ALL') { query += ' AND m.status = ?'; params.push(status); }
+
+      query += ' ORDER BY m.created_at DESC';
+      const [rows]: any = await pool.query(query, params);
+
+      return res.json({
+        reportType: 'meters',
+        generatedAt: new Date().toISOString(),
+        rows: rows.map((r: any) => ({
+          id: r.id,
+          meterNumber: r.meter_number,
+          propertyName: r.property_name,
+          buildingName: r.building_name,
+          unitNumber: r.unit_number,
+          tenantName: r.current_tenant_name || 'شاغر',
+          meterType: r.meter_type,
+          status: r.status,
+          installationDate: formatSqlDate(r.installation_date),
+          currentReading: Number(r.current_reading),
+          previousReading: Number(r.previous_reading),
+          multiplier: Number(r.multiplier)
+        }))
+      });
+    }
+
+    if (reportType === 'readings') {
+      let query = `
+        SELECT 
+          rd.*,
+          p.name as property_name,
+          b.name as building_name,
+          u.unit_number as joined_unit_number,
+          COALESCE(rd.tenant_name, u.current_tenant_name, '') as tenant_name
+        FROM electricity_readings rd
+        LEFT JOIN units u ON rd.unit_id = u.id
+        LEFT JOIN properties p ON COALESCE(rd.property_id, u.property_id) = p.id
+        LEFT JOIN buildings b ON COALESCE(rd.building_id, u.building_id) = b.id
+        WHERE 1=1
+      `;
+      const params: any[] = [];
+      if (propertyId && propertyId !== 'ALL') { query += ' AND (rd.property_id = ? OR u.property_id = ?)'; params.push(propertyId, propertyId); }
+      if (unitId && unitId !== 'ALL') { query += ' AND rd.unit_id = ?'; params.push(unitId); }
+      if (periodMonth && periodMonth !== 'ALL') { query += ' AND rd.reading_period_month = ?'; params.push(periodMonth); }
+      if (startDate) { query += ' AND rd.reading_date >= ?'; params.push(startDate); }
+      if (endDate) { query += ' AND rd.reading_date <= ?'; params.push(endDate); }
+
+      query += ' ORDER BY rd.reading_date DESC';
+      const [rows]: any = await pool.query(query, params);
+
+      const totalConsumption = rows.reduce((acc: number, cur: any) => acc + Number(cur.consumption_kwh || 0), 0);
+      const totalAmount = rows.reduce((acc: number, cur: any) => acc + Number(cur.total_amount || 0), 0);
+
+      return res.json({
+        reportType: 'readings',
+        generatedAt: new Date().toISOString(),
+        summary: {
+          readingsCount: rows.length,
+          totalConsumption,
+          totalAmount
+        },
+        rows: rows.map((r: any) => ({
+          id: r.id,
+          meterNumber: r.meter_number,
+          propertyName: r.property_name,
+          unitNumber: r.unit_number || r.joined_unit_number,
+          tenantName: r.tenant_name,
+          period: r.reading_period_month,
+          readingDate: formatSqlDate(r.reading_date),
+          previousReading: Number(r.previous_reading),
+          currentReading: Number(r.current_reading),
+          consumptionKwh: Number(r.consumption_kwh),
+          ratePerKwh: Number(r.rate_per_kwh),
+          totalAmount: Number(r.total_amount),
+          status: r.status,
+          notes: r.notes
+        }))
+      });
+    }
+
+    if (reportType === 'billing') {
+      let query = `
+        SELECT 
+          i.*,
+          rd.meter_number,
+          rd.consumption_kwh,
+          rd.rate_per_kwh
+        FROM invoices i
+        LEFT JOIN electricity_readings rd ON i.id = rd.invoice_id
+        WHERE i.account_type = 'ELECTRICITY'
+      `;
+      const params: any[] = [];
+      if (propertyId && propertyId !== 'ALL') { query += ' AND i.property_id = ?'; params.push(propertyId); }
+      if (periodMonth && periodMonth !== 'ALL') { query += ' AND i.period_month = ?'; params.push(periodMonth); }
+      if (status && status !== 'ALL') { query += ' AND i.status = ?'; params.push(status); }
+
+      query += ' ORDER BY i.issue_date DESC';
+      const [rows]: any = await pool.query(query, params);
+
+      const totalBilled = rows.reduce((acc: number, cur: any) => acc + Number(cur.total_amount || 0), 0);
+      const totalPaid = rows.reduce((acc: number, cur: any) => acc + Number(cur.paid_amount || 0), 0);
+      const totalRemaining = rows.reduce((acc: number, cur: any) => acc + Number(cur.remaining_amount || 0), 0);
+
+      return res.json({
+        reportType: 'billing',
+        generatedAt: new Date().toISOString(),
+        summary: {
+          invoicesCount: rows.length,
+          totalBilled,
+          totalPaid,
+          totalRemaining
+        },
+        rows: rows.map((r: any) => ({
+          id: r.id,
+          invoiceNumber: r.invoice_number,
+          tenantName: r.tenant_name,
+          propertyName: r.property_name,
+          unitNumber: r.unit_number,
+          periodMonth: r.period_month,
+          meterNumber: r.meter_number || '-',
+          consumptionKwh: Number(r.consumption_kwh || 0),
+          ratePerKwh: Number(r.rate_per_kwh || 0),
+          totalAmount: Number(r.total_amount),
+          paidAmount: Number(r.paid_amount),
+          remainingAmount: Number(r.remaining_amount),
+          status: r.status,
+          issueDate: formatSqlDate(r.issue_date)
+        }))
+      });
+    }
+
+    // Default: 'consumption'
+    let query = `
+      SELECT 
+        rd.*,
+        p.name as property_name,
+        b.name as building_name,
+        COALESCE(rd.tenant_name, u.current_tenant_name, 'غير محدد') as final_tenant_name
+      FROM electricity_readings rd
+      LEFT JOIN units u ON rd.unit_id = u.id
+      LEFT JOIN properties p ON COALESCE(rd.property_id, u.property_id) = p.id
+      LEFT JOIN buildings b ON COALESCE(rd.building_id, u.building_id) = b.id
+      WHERE 1=1
+    `;
+    const params: any[] = [];
+    if (propertyId && propertyId !== 'ALL') { query += ' AND (rd.property_id = ? OR u.property_id = ?)'; params.push(propertyId, propertyId); }
+    if (periodMonth && periodMonth !== 'ALL') { query += ' AND rd.reading_period_month = ?'; params.push(periodMonth); }
+    if (startDate) { query += ' AND rd.reading_date >= ?'; params.push(startDate); }
+    if (endDate) { query += ' AND rd.reading_date <= ?'; params.push(endDate); }
+
+    query += ' ORDER BY rd.reading_date DESC';
+    const [rows]: any = await pool.query(query, params);
+
+    const totalConsumption = rows.reduce((acc: number, cur: any) => acc + Number(cur.consumption_kwh || 0), 0);
+    const totalAmount = rows.reduce((acc: number, cur: any) => acc + Number(cur.total_amount || 0), 0);
+
+    res.json({
+      reportType: 'consumption',
+      generatedAt: new Date().toISOString(),
+      summary: {
+        recordsCount: rows.length,
+        totalConsumption,
+        totalAmount,
+        averageRate: rows.length > 0 ? (totalAmount / (totalConsumption || 1)) : 0
+      },
+      rows: rows.map((r: any) => ({
+        id: r.id,
+        meterNumber: r.meter_number,
+        propertyName: r.property_name,
+        buildingName: r.building_name,
+        unitNumber: r.unit_number,
+        tenantName: r.final_tenant_name,
+        period: r.reading_period_month,
+        readingDate: formatSqlDate(r.reading_date),
+        previousReading: Number(r.previous_reading),
+        currentReading: Number(r.current_reading),
+        consumptionKwh: Number(r.consumption_kwh),
+        ratePerKwh: Number(r.rate_per_kwh),
+        totalAmount: Number(r.total_amount),
+        tariffName: r.tariff_name || 'التعرفة المعتمدة',
+        status: r.status,
+        invoiceNumber: r.invoice_number
+      }))
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
 

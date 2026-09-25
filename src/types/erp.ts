@@ -394,12 +394,65 @@ export interface WaterOperatingCost {
 
 export interface ElectricityRate {
   id: string;
+  tariffName?: string;
   propertyId: string;
-  pricePerKWh: number;
+  propertyName?: string;
+  ratePerKwh?: number;
+  pricePerKWh?: number;
   effectiveFrom: string;
-  effectiveTo?: string;
-  isActive: boolean;
+  effectiveTo?: string | null;
+  status?: 'ACTIVE' | 'INACTIVE';
+  isActive?: boolean;
   notes?: string;
+  createdBy?: string;
+  createdAt?: string;
+}
+
+export type ElectricityTariff = ElectricityRate;
+
+export interface ElectricityMeter {
+  id: string;
+  meterNumber: string;
+  propertyId: string;
+  propertyName?: string;
+  propertyCode?: string;
+  buildingId?: string;
+  buildingName?: string;
+  unitId?: string;
+  unitNumber?: string;
+  unitType?: string;
+  currentTenantId?: string;
+  currentTenantName?: string;
+  currentContractId?: string;
+  meterType: 'DIGITAL' | 'ANALOG' | 'SMART' | 'PREPAID';
+  status: 'ACTIVE' | 'INACTIVE' | 'DAMAGED' | 'REPLACED';
+  installationDate?: string;
+  initialReading: number;
+  currentReading: number;
+  previousReading: number;
+  multiplier: number;
+  locationNotes?: string;
+  notes?: string;
+  createdBy?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface MeterReplacement {
+  id: string;
+  oldMeterId: string;
+  oldMeterNumber: string;
+  newMeterId: string;
+  newMeterNumber: string;
+  unitId: string;
+  unitNumber?: string;
+  finalReadingOld: number;
+  initialReadingNew: number;
+  replacementDate: string;
+  reason: string;
+  replacedBy: string;
+  notes?: string;
+  createdAt?: string;
 }
 
 export interface ElectricityReading {
@@ -407,19 +460,54 @@ export interface ElectricityReading {
   meterId: string;
   meterNumber: string;
   propertyId: string;
+  propertyName?: string;
+  buildingId?: string;
+  buildingName?: string;
   unitId: string;
   unitNumber: string;
-  tenantId: string;
-  tenantName: string;
-  period: string;
+  tenantId?: string;
+  tenantName?: string;
+  contractId?: string;
+  period: string; // readingPeriodMonth alias
+  readingPeriodMonth?: string;
+  billingPeriodStart?: string;
+  billingPeriodEnd?: string;
   readingDate: string;
   previousReading: number;
   currentReading: number;
-  consumption: number; // currentReading - previousReading
-  ratePerKWh: number;
-  totalAmount: number; // consumption * ratePerKWh
+  consumption: number; // consumptionKwh alias
+  consumptionKwh?: number;
+  multiplier?: number;
+  ratePerKWh: number; // ratePerKwh alias
+  ratePerKwh?: number;
+  tariffId?: string;
+  tariffName?: string;
+  totalAmount: number;
   isResetOrReplaced?: boolean;
+  isResetOrReplacement?: boolean;
+  resetReason?: string;
+  status?: 'UNBILLED' | 'BILLED' | 'CANCELLED';
+  invoiceId?: string;
+  invoiceNumber?: string;
+  recordedBy?: string;
+  postedAt?: string;
+  postedBy?: string;
   notes?: string;
+  createdAt?: string;
+}
+
+export interface ElectricityDashboardStats {
+  totalMeters: number;
+  activeMeters: number;
+  inactiveMeters: number;
+  metersNeedingReading: number;
+  currentBillingPeriod: string;
+  totalConsumptionCurrentPeriod: number;
+  totalElectricityCharges: number;
+  totalInvoicesCount: number;
+  unpaidChargesCount: number;
+  unpaidChargesAmount: number;
+  propertiesWithElectricityCount: number;
 }
 
 export interface DashboardStats {

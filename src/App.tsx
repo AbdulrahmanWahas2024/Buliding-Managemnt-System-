@@ -40,6 +40,7 @@ import { TenantsModule } from './components/modules/TenantsModule';
 import { ContractsModule } from './components/modules/ContractsModule';
 import { RentBillingModule } from './components/modules/RentBillingModule';
 import { WaterCostManagementModule } from './components/modules/water/WaterCostManagementModule';
+import { ElectricityModule } from './components/modules/electricity/ElectricityModule';
 
 import { 
   CURRENT_USER, 
@@ -310,6 +311,12 @@ export default function App() {
             />
           ) : activeTab === 'water' ? (
             <WaterCostManagementModule
+              onNavigateToTenant={(tenantId) => setActiveTab('tenants')}
+              onNavigateToProperty={(propertyId) => setActiveTab('properties')}
+              onRefreshGlobalStats={loadDatabaseData}
+            />
+          ) : activeTab === 'electricity' ? (
+            <ElectricityModule 
               onNavigateToTenant={(tenantId) => setActiveTab('tenants')}
               onNavigateToProperty={(propertyId) => setActiveTab('properties')}
               onRefreshGlobalStats={loadDatabaseData}
