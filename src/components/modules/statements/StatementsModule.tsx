@@ -4,6 +4,7 @@ import {
   Scale, Layers, RefreshCw, AlertTriangle, ArrowUpRight, ArrowDownLeft 
 } from 'lucide-react';
 import { api } from '../../../services/api';
+import { formatMoney, formatNumber } from '../../../utils/formatters';
 import { TenantStatementView } from './TenantStatementView';
 import { PropertyStatementView } from './PropertyStatementView';
 import { UnitStatementView } from './UnitStatementView';
@@ -42,8 +43,6 @@ export const StatementsModule: React.FC<StatementsModuleProps> = ({
   // Modal states
   const [selectedTxId, setSelectedTxId] = useState<string | null>(null);
   const [printData, setPrintData] = useState<any | null>(null);
-
-  const formatMoney = (val: number) => new Intl.NumberFormat('ar-YE').format(val || 0);
 
   const loadBaseData = async () => {
     setDashboardLoading(true);
@@ -94,15 +93,17 @@ export const StatementsModule: React.FC<StatementsModuleProps> = ({
           <button
             onClick={handleGlobalRefresh}
             disabled={dashboardLoading}
+            title="تحديث شامل من قاعدة البيانات"
+            aria-label="تحديث شامل من قاعدة البيانات"
             className="flex items-center gap-1.5 px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-all cursor-pointer border border-slate-200"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${dashboardLoading ? 'animate-spin text-blue-600' : ''}`} />
-            <span>تحديث شامل من MySQL</span>
+            <span>تحديث شامل من قاعدة البيانات</span>
           </button>
         </div>
       </div>
 
-      {/* High-Level Financial Ribbon from MySQL */}
+      {/* High-Level Financial Ribbon from Database */}
       {dashboardData && (
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
           <div className="p-4 bg-white border border-slate-200 rounded-2xl shadow-xs">
@@ -132,7 +133,7 @@ export const StatementsModule: React.FC<StatementsModuleProps> = ({
           <div className="p-4 bg-white border border-slate-200 rounded-2xl shadow-xs">
             <span className="text-[11px] font-bold text-slate-400 block mb-1">عدد العملاء المدينين</span>
             <div className="text-lg font-black font-mono text-slate-900">
-              {dashboardData.debtorsCount} <span className="text-xs font-normal text-slate-400">مستأجر</span>
+              {formatNumber(dashboardData.debtorsCount)} <span className="text-xs font-normal text-slate-400">مستأجر</span>
             </div>
             <span className="text-[10px] text-slate-400 mt-1 block">عليهم أرصدة مستحقة</span>
           </div>

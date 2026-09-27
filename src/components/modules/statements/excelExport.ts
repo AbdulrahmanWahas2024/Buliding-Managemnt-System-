@@ -1,4 +1,5 @@
 import * as XLSX from 'xlsx';
+import { toWesternDigits } from '../../../utils/formatters';
 
 export interface ExcelExportOptions {
   fileName: string;
@@ -22,7 +23,7 @@ export function exportStatementToExcel(options: ExcelExportOptions) {
 
   if (metadata) {
     Object.entries(metadata).forEach(([key, val]) => {
-      rows.push([key, val]);
+      rows.push([key, typeof val === 'string' ? toWesternDigits(val) : val]);
     });
     rows.push([]);
   }
@@ -30,9 +31,9 @@ export function exportStatementToExcel(options: ExcelExportOptions) {
   // Add Arabic Column Headers
   rows.push(headers);
 
-  // Add Transaction Data Rows
+  // Add Transaction Data Rows with Western digits
   data.forEach(row => {
-    rows.push(row);
+    rows.push(row.map(cell => (typeof cell === 'string' ? toWesternDigits(cell) : cell)));
   });
 
   // Create worksheet

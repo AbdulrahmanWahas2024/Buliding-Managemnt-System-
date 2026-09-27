@@ -4,6 +4,7 @@ import {
   Calendar, CheckCircle2, Clock, AlertTriangle, XCircle 
 } from 'lucide-react';
 import { api } from '../../../services/api';
+import { formatMoney, formatNumber, formatDate } from '../../../utils/formatters';
 import { exportStatementToExcel } from './excelExport';
 
 interface InvoiceStatementViewProps {
@@ -31,8 +32,6 @@ export const InvoiceStatementView: React.FC<InvoiceStatementViewProps> = ({
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
-
-  const formatMoney = (val: number) => new Intl.NumberFormat('ar-YE').format(val || 0);
 
   const fetchInvoices = async () => {
     setLoading(true);
@@ -120,16 +119,16 @@ export const InvoiceStatementView: React.FC<InvoiceStatementViewProps> = ({
 
     onOpenPrint({
       title: 'كشف الفواتير والمطالبات المالية الصادرة',
-      subtitle: `عدد الفواتير: ${data.totals.totalCount} • إجمالي المتبقي: ${formatMoney(data.totals.sumRemainingAmount)} ر.ي`,
+      subtitle: `عدد الفواتير: ${formatNumber(data.totals.totalCount)} • إجمالي المتبقي: ${formatMoney(data.totals.sumRemainingAmount)} ر.ي`,
       orientation: 'landscape',
       metadata: [
-        { label: 'عدد الفواتير', value: String(data.totals.totalCount) },
+        { label: 'عدد الفواتير', value: formatNumber(data.totals.totalCount) },
         { label: 'إجمالي القيمة', value: `${formatMoney(data.totals.sumTotalAmount)} ر.ي` },
         { label: 'إجمالي المسدد', value: `${formatMoney(data.totals.sumPaidAmount)} ر.ي` },
         { label: 'إجمالي المتبقي', value: `${formatMoney(data.totals.sumRemainingAmount)} ر.ي` }
       ],
       transactions: data.invoices.map((inv: any) => ({
-        date: inv.issueDate,
+        date: formatDate(inv.issueDate),
         reference: inv.invoiceNumber,
         description: `${inv.accountType === 'RENT' ? 'إيجار' : inv.accountType === 'ELECTRICITY' ? 'كهرباء' : 'مياه'} ${inv.periodMonth} - ${inv.tenantName} (${inv.propertyName} ${inv.unitNumber})`,
         debit: inv.totalAmount,
@@ -355,7 +354,7 @@ export const InvoiceStatementView: React.FC<InvoiceStatementViewProps> = ({
                 <tr>
                   <td colSpan={11} className="py-12 text-center text-slate-400">
                     <div className="w-7 h-7 border-2 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-2"></div>
-                    <span>جاري تحميل كشف الفواتير من MySQL...</span>
+                    <span>جاري تحميل كشف الفواتير من قاعدة البيانات...</span>
                   </td>
                 </tr>
               ) : !data || data.invoices?.length === 0 ? (
@@ -386,7 +385,7 @@ export const InvoiceStatementView: React.FC<InvoiceStatementViewProps> = ({
                       <span className="font-mono text-slate-400">{inv.unitNumber}</span>
                     </td>
                     <td className="py-2.5 px-3 text-slate-700">{inv.periodMonth}</td>
-                    <td className="py-2.5 px-3 font-mono text-slate-600">{inv.dueDate}</td>
+                    <td className="py-2.5 px-3 font-mono text-slate-600">{formatDate(inv.dueDate)}</td>
                     <td className="py-2.5 px-3 text-left font-mono font-bold text-slate-900">
                       {formatMoney(inv.totalAmount)}
                     </td>

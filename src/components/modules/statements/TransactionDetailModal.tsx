@@ -4,6 +4,7 @@ import {
   Calendar, CheckCircle2, AlertTriangle, QrCode, Clock, ShieldCheck 
 } from 'lucide-react';
 import { api } from '../../../services/api';
+import { formatMoney, formatDate, toWesternDigits } from '../../../utils/formatters';
 
 interface TransactionDetailModalProps {
   transactionId: string | null;
@@ -33,8 +34,6 @@ export const TransactionDetailModal: React.FC<TransactionDetailModalProps> = ({
   }, [transactionId]);
 
   if (!transactionId) return null;
-
-  const formatMoney = (val: number) => new Intl.NumberFormat('ar-YE').format(val || 0);
 
   const getAccountBadge = (type: string) => {
     switch (type) {
@@ -102,7 +101,7 @@ export const TransactionDetailModal: React.FC<TransactionDetailModalProps> = ({
           {loading && (
             <div className="py-12 flex flex-col items-center justify-center text-slate-400">
               <div className="w-8 h-8 border-3 border-blue-600 border-t-transparent rounded-full animate-spin mb-3"></div>
-              <p className="text-sm font-medium">جاري جلب تفاصيل الحركة المالية من MySQL...</p>
+              <p className="text-sm font-medium">جاري جلب تفاصيل الحركة المالية من قاعدة البيانات...</p>
             </div>
           )}
 
@@ -139,7 +138,7 @@ export const TransactionDetailModal: React.FC<TransactionDetailModalProps> = ({
                   <span className="text-[11px] text-slate-400 block mb-1">تاريخ المعاملة</span>
                   <div className="text-sm font-bold flex items-center gap-1.5 text-slate-200 mt-1">
                     <Calendar className="w-4 h-4 text-slate-400" />
-                    <span>{data.date}</span>
+                    <span className="font-mono">{formatDate(data.date)}</span>
                   </div>
                 </div>
               </div>
@@ -151,7 +150,7 @@ export const TransactionDetailModal: React.FC<TransactionDetailModalProps> = ({
                   <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">بيانات القيد المحاسبي</h3>
                   <div className="flex justify-between items-center text-sm py-1 border-b border-slate-200/60">
                     <span className="text-slate-500">المرجع المالي:</span>
-                    <span className="font-mono font-bold text-slate-900 bg-white px-2 py-0.5 rounded border border-slate-200">{data.reference}</span>
+                    <span className="font-mono font-bold text-slate-900 bg-white px-2 py-0.5 rounded border border-slate-200">{toWesternDigits(data.reference)}</span>
                   </div>
                   <div className="flex justify-between items-center text-sm py-1 border-b border-slate-200/60">
                     <span className="text-slate-500">نوع الحساب:</span>
@@ -187,7 +186,7 @@ export const TransactionDetailModal: React.FC<TransactionDetailModalProps> = ({
                   </div>
                   <div className="flex justify-between items-center text-sm py-1 border-b border-slate-200/60">
                     <span className="text-slate-500">كود المستأجر / الهاتف:</span>
-                    <span className="font-mono text-slate-700 text-xs">{data.tenant?.code} • {data.tenant?.phone || 'لا يوجد'}</span>
+                    <span className="font-mono text-slate-700 text-xs">{toWesternDigits(data.tenant?.code)} • {toWesternDigits(data.tenant?.phone) || 'لا يوجد'}</span>
                   </div>
                   <div className="flex justify-between items-center text-sm py-1 border-b border-slate-200/60">
                     <span className="text-slate-500 flex items-center gap-1.5">
@@ -201,7 +200,7 @@ export const TransactionDetailModal: React.FC<TransactionDetailModalProps> = ({
                       <Home className="w-3.5 h-3.5 text-slate-400" />
                       <span>رقم الوحدة:</span>
                     </span>
-                    <span className="font-bold text-slate-800 font-mono">{data.unit?.unitNumber || 'غير محدد'}</span>
+                    <span className="font-bold text-slate-800 font-mono">{toWesternDigits(data.unit?.unitNumber) || 'غير محدد'}</span>
                   </div>
                   <div className="flex justify-between items-center text-sm py-1">
                     <span className="text-slate-500 flex items-center gap-1.5">
@@ -233,7 +232,7 @@ export const TransactionDetailModal: React.FC<TransactionDetailModalProps> = ({
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs pt-1">
                     <div className="bg-white p-2 rounded border border-blue-100">
                       <span className="text-slate-500 block">رقم الفاتورة:</span>
-                      <span className="font-mono font-bold text-slate-900">{data.linkedInvoice.invoiceNumber}</span>
+                      <span className="font-mono font-bold text-slate-900">{toWesternDigits(data.linkedInvoice.invoiceNumber)}</span>
                     </div>
                     <div className="bg-white p-2 rounded border border-blue-100">
                       <span className="text-slate-500 block">فترة الاستحقاق:</span>
@@ -266,7 +265,7 @@ export const TransactionDetailModal: React.FC<TransactionDetailModalProps> = ({
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs pt-1">
                     <div className="bg-white p-2 rounded border border-emerald-100">
                       <span className="text-slate-500 block">رقم السند:</span>
-                      <span className="font-mono font-bold text-slate-900">{data.linkedPayment.receiptNumber}</span>
+                      <span className="font-mono font-bold text-slate-900">{toWesternDigits(data.linkedPayment.receiptNumber)}</span>
                     </div>
                     <div className="bg-white p-2 rounded border border-emerald-100">
                       <span className="text-slate-500 block">طريقة السداد:</span>
@@ -307,7 +306,7 @@ export const TransactionDetailModal: React.FC<TransactionDetailModalProps> = ({
                       <span className="text-slate-500">{data.linkedTransaction.description}</span>
                     </div>
                     <div className="text-left font-mono">
-                      <span className="text-slate-400 text-[10px] block">{data.linkedTransaction.date}</span>
+                      <span className="text-slate-400 text-[10px] block">{formatDate(data.linkedTransaction.date)}</span>
                       <span className="font-bold text-slate-800">
                         {data.linkedTransaction.debit > 0 ? `مدين: ${formatMoney(data.linkedTransaction.debit)}` : `دائن: ${formatMoney(data.linkedTransaction.credit)}`} ر.ي
                       </span>

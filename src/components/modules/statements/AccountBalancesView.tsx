@@ -4,6 +4,7 @@ import {
   Info, TrendingUp, Layers, Wallet, ArrowUpRight, ArrowDownLeft 
 } from 'lucide-react';
 import { api } from '../../../services/api';
+import { formatMoney, formatNumber, formatDate, toWesternDigits } from '../../../utils/formatters';
 import { exportStatementToExcel } from './excelExport';
 
 interface AccountBalancesViewProps {
@@ -16,8 +17,6 @@ export const AccountBalancesView: React.FC<AccountBalancesViewProps> = ({
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
-
-  const formatMoney = (val: number) => new Intl.NumberFormat('ar-YE').format(val || 0);
 
   const fetchAccountBalances = async () => {
     setLoading(true);
@@ -83,7 +82,7 @@ export const AccountBalancesView: React.FC<AccountBalancesViewProps> = ({
 
     onOpenPrint({
       title: 'كشف أرصدة الحسابات وميزان المراجعة التحليلي',
-      subtitle: 'تقرير صادر ومطابق مع دفاتر الأستاذ الفرعية وقاعدة بيانات MySQL',
+      subtitle: 'تقرير صادر ومطابق مع دفاتر الأستاذ الفرعية وقاعدة البيانات',
       orientation: 'landscape',
       columns: [
         { key: 'code', label: 'رمز الحساب', align: 'center', width: 'w-24' },
@@ -101,7 +100,7 @@ export const AccountBalancesView: React.FC<AccountBalancesViewProps> = ({
         { label: 'إجمالي الأرصدة الدائنة', value: `${formatMoney(data.totals.totalCredits)} ر.ي` },
         { label: 'الفارق التحليلي', value: `${formatMoney(data.totals.difference)} ر.ي` },
         { label: 'حالة المطابقة', value: 'مطابق دفترياً بنسبة 100%' },
-        { label: 'تاريخ الاستخراج', value: new Date().toISOString().split('T')[0] }
+        { label: 'تاريخ الاستخراج', value: formatDate(new Date()) }
       ],
       transactions: data.accounts.map((acc: any) => ({
         code: acc.accountCode,
@@ -249,7 +248,7 @@ export const AccountBalancesView: React.FC<AccountBalancesViewProps> = ({
                 data.accounts.map((acc: any) => (
                   <tr key={acc.accountCode} className="hover:bg-slate-50/80 transition-colors">
                     <td className="py-3 px-3 font-mono font-bold text-slate-900 text-center bg-slate-50/50">
-                      {acc.accountCode}
+                      {toWesternDigits(acc.accountCode)}
                     </td>
                     <td className="py-3 px-4 font-bold text-slate-900">{acc.accountName}</td>
                     <td className="py-3 px-3 text-slate-600">{acc.category}</td>

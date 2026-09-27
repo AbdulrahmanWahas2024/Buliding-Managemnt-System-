@@ -4,6 +4,7 @@ import {
   CheckCircle2, XCircle, ArrowRightLeft, CreditCard, Banknote, Building
 } from 'lucide-react';
 import { api } from '../../../services/api';
+import { formatMoney, formatNumber, formatDate } from '../../../utils/formatters';
 import { exportStatementToExcel } from './excelExport';
 
 interface CollectionsStatementViewProps {
@@ -25,8 +26,6 @@ export const CollectionsStatementView: React.FC<CollectionsStatementViewProps> =
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
-
-  const formatMoney = (val: number) => new Intl.NumberFormat('ar-YE').format(val || 0);
 
   const fetchCollections = async () => {
     setLoading(true);
@@ -98,7 +97,7 @@ export const CollectionsStatementView: React.FC<CollectionsStatementViewProps> =
         'صافي النقدية الموردة:': `${formatMoney(data.summary.netCollected)} ر.ي`,
         'إجمالي الملغي:': `${formatMoney(data.summary.totalCancelled)} ر.ي`,
         'إجمالي المعكوس:': `${formatMoney(data.summary.totalReversed)} ر.ي`,
-        'عدد السندات:': String(data.summary.count)
+        'عدد السندات:': formatNumber(data.summary.count)
       },
       headers,
       data: rows
@@ -110,7 +109,7 @@ export const CollectionsStatementView: React.FC<CollectionsStatementViewProps> =
 
     onOpenPrint({
       title: 'كشف حركة وسندات التحصيل والصناديق الخزنية',
-      subtitle: `صافي المبالغ الموردة: ${formatMoney(data.summary.netCollected)} ر.ي • عدد العمليات: ${data.summary.count}`,
+      subtitle: `صافي المبالغ الموردة: ${formatMoney(data.summary.netCollected)} ر.ي • عدد العمليات: ${formatNumber(data.summary.count)}`,
       orientation: 'landscape',
       metadata: [
         { label: 'إجمالي المحصل المعتمد', value: `${formatMoney(data.summary.totalCompleted)} ر.ي` },
@@ -119,7 +118,7 @@ export const CollectionsStatementView: React.FC<CollectionsStatementViewProps> =
         { label: 'صافي المقبوضات', value: `${formatMoney(data.summary.netCollected)} ر.ي` }
       ],
       transactions: data.collections.map((c: any) => ({
-        date: c.collectedAt?.split('T')[0] || c.collectedAt,
+        date: formatDate(c.collectedAt),
         reference: c.receiptNumber,
         description: `سداد ${c.accountType} - ${c.tenantName} (${c.propertyName} ${c.unitNumber}) - طريقة: ${c.paymentMethod}`,
         debit: 0,
@@ -341,7 +340,7 @@ export const CollectionsStatementView: React.FC<CollectionsStatementViewProps> =
                 <tr>
                   <td colSpan={10} className="py-12 text-center text-slate-400">
                     <div className="w-7 h-7 border-2 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-2"></div>
-                    <span>جاري تحميل بيانات حركة التحصيل من MySQL...</span>
+                    <span>جاري تحميل بيانات حركة التحصيل من قاعدة البيانات...</span>
                   </td>
                 </tr>
               ) : !data || data.collections?.length === 0 ? (
@@ -356,7 +355,7 @@ export const CollectionsStatementView: React.FC<CollectionsStatementViewProps> =
                     <td className="py-2.5 px-3 text-center text-slate-400 font-mono text-[11px]">{idx + 1}</td>
                     <td className="py-2.5 px-3 font-mono font-bold text-slate-900">{c.receiptNumber}</td>
                     <td className="py-2.5 px-3 font-mono text-slate-600 text-[11px]">
-                      {c.collectedAt?.split('T')[0] || c.collectedAt}
+                      {formatDate(c.collectedAt)}
                     </td>
                     <td className="py-2.5 px-3 font-medium text-slate-900 truncate max-w-[130px]" title={c.tenantName}>
                       {c.tenantName}

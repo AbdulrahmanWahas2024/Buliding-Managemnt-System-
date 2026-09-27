@@ -4,6 +4,7 @@ import {
   Home, RefreshCw, Layers, TrendingUp
 } from 'lucide-react';
 import { api } from '../../../services/api';
+import { formatMoney, formatNumber, formatDate, toWesternDigits } from '../../../utils/formatters';
 import { exportStatementToExcel } from './excelExport';
 
 interface PropertyStatementViewProps {
@@ -26,8 +27,6 @@ export const PropertyStatementView: React.FC<PropertyStatementViewProps> = ({
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
-
-  const formatMoney = (val: number) => new Intl.NumberFormat('ar-YE').format(val || 0);
 
   const fetchPropertyStatement = async () => {
     if (!selectedPropertyId) return;
@@ -110,7 +109,7 @@ export const PropertyStatementView: React.FC<PropertyStatementViewProps> = ({
       metadata: [
         { label: 'العقار', value: p.name },
         { label: 'كود العقار', value: p.code },
-        { label: 'الفترة', value: `${dateFrom || 'من البداية'} إلى ${dateTo || 'تاريخ اليوم'}` },
+        { label: 'الفترة', value: `${dateFrom ? formatDate(dateFrom) : 'من البداية'} إلى ${dateTo ? formatDate(dateTo) : 'تاريخ اليوم'}` },
         { label: 'نوع الحساب', value: selectedAccountType === 'ALL' ? 'كافة الذمم المشتركة' : selectedAccountType },
         { label: 'الرصيد الافتتاحي', value: `${formatMoney(data.openingBalance)} ر.ي` },
         { label: 'إجمالي المطالبات', value: `${formatMoney(data.totalDebits)} ر.ي` },
@@ -361,8 +360,8 @@ export const PropertyStatementView: React.FC<PropertyStatementViewProps> = ({
                 data.transactions.map((tx: any, idx: number) => (
                   <tr key={tx.id} className="hover:bg-slate-50/80 transition-colors">
                     <td className="py-2.5 px-3 text-center text-slate-400 font-mono text-[11px]">{idx + 1}</td>
-                    <td className="py-2.5 px-3 font-mono text-slate-700">{tx.date}</td>
-                    <td className="py-2.5 px-3 font-mono font-bold text-slate-900">{tx.reference}</td>
+                    <td className="py-2.5 px-3 font-mono text-slate-700">{formatDate(tx.date)}</td>
+                    <td className="py-2.5 px-3 font-mono font-bold text-slate-900">{toWesternDigits(tx.reference)}</td>
                     <td className="py-2.5 px-3 text-slate-800 font-medium truncate max-w-[120px]" title={tx.tenantName}>
                       {tx.tenantName || 'غير محدد'}
                     </td>

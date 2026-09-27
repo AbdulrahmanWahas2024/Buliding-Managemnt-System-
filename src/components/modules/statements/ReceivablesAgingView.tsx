@@ -4,6 +4,7 @@ import {
   Building, User, Home, RefreshCw, CheckCircle2, ChevronRight, Phone
 } from 'lucide-react';
 import { api } from '../../../services/api';
+import { formatMoney, formatNumber, formatDate } from '../../../utils/formatters';
 import { exportStatementToExcel } from './excelExport';
 
 interface ReceivablesAgingViewProps {
@@ -30,8 +31,6 @@ export const ReceivablesAgingView: React.FC<ReceivablesAgingViewProps> = ({
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
-
-  const formatMoney = (val: number) => new Intl.NumberFormat('ar-YE').format(val || 0);
 
   const fetchReceivables = async () => {
     setLoading(true);
@@ -120,18 +119,18 @@ export const ReceivablesAgingView: React.FC<ReceivablesAgingViewProps> = ({
 
     onOpenPrint({
       title: 'كشف الذمم المدينة وتحليل أعمار الديون',
-      subtitle: `مبني على تاريخ الاستحقاق • عدد الذمم غير المسددة: ${data.kpis.unpaidInvoicesCount}`,
+      subtitle: `مبني على تاريخ الاستحقاق • عدد الذمم غير المسددة: ${formatNumber(data.kpis.unpaidInvoicesCount)}`,
       orientation: 'landscape',
       metadata: [
         { label: 'إجمالي الذمم المستحقة', value: `${formatMoney(data.kpis.totalOutstanding)} ر.ي` },
-        { label: 'عدد العملاء المدينين', value: String(data.kpis.debtorsCount) },
-        { label: 'عدد الفواتير غير المسددة', value: String(data.kpis.unpaidInvoicesCount) },
+        { label: 'عدد العملاء المدينين', value: formatNumber(data.kpis.debtorsCount) },
+        { label: 'عدد الفواتير غير المسددة', value: formatNumber(data.kpis.unpaidInvoicesCount) },
         { label: 'التصنيف المختار', value: selectedAgingBucket === 'ALL' ? 'كافة الفئات' : selectedAgingBucket }
       ],
       transactions: data.receivables.map((r: any) => ({
-        date: r.dueDate,
+        date: formatDate(r.dueDate),
         reference: r.invoiceNumber,
-        description: `${r.tenantName} (${r.propertyName} ${r.unitNumber}) - تأخير ${r.daysOverdue > 0 ? r.daysOverdue + ' يوم' : 'مستحقة حديثاً'}`,
+        description: `${r.tenantName} (${r.propertyName} ${r.unitNumber}) - تأخير ${r.daysOverdue > 0 ? formatNumber(r.daysOverdue) + ' يوم' : 'مستحقة حديثاً'}`,
         debit: r.totalAmount,
         credit: r.paidAmount,
         runningBalance: r.remainingAmount
@@ -402,7 +401,7 @@ export const ReceivablesAgingView: React.FC<ReceivablesAgingViewProps> = ({
                 <tr>
                   <td colSpan={11} className="py-12 text-center text-slate-400">
                     <div className="w-7 h-7 border-2 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-2"></div>
-                    <span>جاري تحميل بيانات الذمم وأعمار الديون من MySQL...</span>
+                    <span>جاري تحميل بيانات الذمم وأعمار الديون من قاعدة البيانات...</span>
                   </td>
                 </tr>
               ) : !data || data.receivables?.length === 0 ? (
@@ -438,12 +437,12 @@ export const ReceivablesAgingView: React.FC<ReceivablesAgingViewProps> = ({
                         {r.accountType === 'RENT' ? 'إيجار' : r.accountType === 'ELECTRICITY' ? 'كهرباء' : 'مياه'}
                       </span>
                     </td>
-                    <td className="py-2.5 px-3 font-mono font-medium text-slate-700">{r.dueDate}</td>
+                    <td className="py-2.5 px-3 font-mono font-medium text-slate-700">{formatDate(r.dueDate)}</td>
                     <td className="py-2.5 px-3 text-center font-mono">
                       {r.daysOverdue <= 0 ? (
                         <span className="text-emerald-600 font-bold">غير متأخرة</span>
                       ) : (
-                        <span className="text-rose-600 font-bold">{r.daysOverdue} يوم</span>
+                        <span className="text-rose-600 font-bold">{formatNumber(r.daysOverdue)} يوم</span>
                       )}
                     </td>
                     <td className="py-2.5 px-3 text-center">

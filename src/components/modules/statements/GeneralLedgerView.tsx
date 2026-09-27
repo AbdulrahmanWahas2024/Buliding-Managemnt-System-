@@ -4,6 +4,7 @@ import {
   Calendar, Building, User, Layers, ArrowUpRight, ArrowDownLeft 
 } from 'lucide-react';
 import { api } from '../../../services/api';
+import { formatMoney, formatNumber, formatDate, toWesternDigits } from '../../../utils/formatters';
 import { exportStatementToExcel } from './excelExport';
 
 interface GeneralLedgerViewProps {
@@ -31,8 +32,6 @@ export const GeneralLedgerView: React.FC<GeneralLedgerViewProps> = ({
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
-
-  const formatMoney = (val: number) => new Intl.NumberFormat('ar-YE').format(val || 0);
 
   const fetchLedger = async () => {
     setLoading(true);
@@ -104,7 +103,7 @@ export const GeneralLedgerView: React.FC<GeneralLedgerViewProps> = ({
         'إجمالي المدين:': `${formatMoney(data.summary.totalDebits)} ر.ي`,
         'إجمالي الدائن:': `${formatMoney(data.summary.totalCredits)} ر.ي`,
         'صافي الرصيد:': `${formatMoney(data.summary.netBalance)} ر.ي`,
-        'عدد القيود:': String(data.summary.totalCount)
+        'عدد القيود:': formatNumber(data.summary.totalCount)
       },
       headers,
       data: rows
@@ -116,14 +115,18 @@ export const GeneralLedgerView: React.FC<GeneralLedgerViewProps> = ({
 
     onOpenPrint({
       title: 'سجل قيود دفتر الأستاذ العام (General Ledger)',
-      subtitle: `الفترة من ${dateFrom || 'البداية'} إلى ${dateTo || 'تاريخ اليوم'} • عدد القيود: ${data.summary.totalCount}`,
+      subtitle: `الفترة من ${dateFrom ? formatDate(dateFrom) : 'البداية'} إلى ${dateTo ? formatDate(dateTo) : 'تاريخ اليوم'} • عدد القيود: ${formatNumber(data.summary.totalCount)}`,
+      orientation: 'landscape',
       metadata: [
         { label: 'إجمالي الحركات المدينة', value: `${formatMoney(data.summary.totalDebits)} ر.ي` },
         { label: 'إجمالي الحركات الدائنة', value: `${formatMoney(data.summary.totalCredits)} ر.ي` },
         { label: 'صافي رصيد الدفتر', value: `${formatMoney(data.summary.netBalance)} ر.ي` },
-        { label: 'عدد القيود المحاسبية', value: String(data.summary.totalCount) }
+        { label: 'عدد القيود المحاسبية', value: formatNumber(data.summary.totalCount) }
       ],
-      transactions: data.entries,
+      transactions: data.entries.map((e: any) => ({
+        ...e,
+        date: formatDate(e.date)
+      })),
       totals: {
         totalDebits: data.summary.totalDebits,
         totalCredits: data.summary.totalCredits,
@@ -362,7 +365,7 @@ export const GeneralLedgerView: React.FC<GeneralLedgerViewProps> = ({
                 <tr>
                   <td colSpan={11} className="py-12 text-center text-slate-400">
                     <div className="w-7 h-7 border-2 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-2"></div>
-                    <span>جاري تحميل قيود دفتر الأستاذ العام من MySQL...</span>
+                    <span>جاري تحميل قيود دفتر الأستاذ العام من قاعدة البيانات...</span>
                   </td>
                 </tr>
               ) : !data || data.entries?.length === 0 ? (
@@ -380,10 +383,10 @@ export const GeneralLedgerView: React.FC<GeneralLedgerViewProps> = ({
                       className={`hover:bg-slate-50/80 transition-colors ${isReversal ? 'bg-rose-50/30' : ''}`}
                     >
                       <td className="py-2.5 px-3 text-center text-slate-400 font-mono text-[11px]">{idx + 1}</td>
-                      <td className="py-2.5 px-3 font-mono text-slate-700">{entry.date}</td>
+                      <td className="py-2.5 px-3 font-mono text-slate-700">{formatDate(entry.date)}</td>
                       <td className="py-2.5 px-3 font-mono font-bold text-slate-900">
                         <div className="flex items-center gap-1.5">
-                          <span>{entry.reference}</span>
+                          <span>{toWesternDigits(entry.reference)}</span>
                           {isReversal && (
                             <span className="text-[10px] bg-rose-100 text-rose-700 px-1 py-0.2 rounded font-sans font-bold">عكس</span>
                           )}

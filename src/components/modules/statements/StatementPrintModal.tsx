@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { X, Printer, FileText, CheckCircle2, RotateCw } from 'lucide-react';
+import { formatMoney, formatDate, formatTime, toWesternDigits } from '../../../utils/formatters';
 
 export interface PrintColumn {
   key: string;
@@ -49,11 +50,6 @@ export const StatementPrintModal: React.FC<StatementPrintModalProps> = ({
   columns
 }) => {
   const [currentOrientation, setCurrentOrientation] = useState<'portrait' | 'landscape'>(orientation);
-
-  const formatMoney = (val: number) => {
-    if (val === undefined || val === null || isNaN(val)) return '0';
-    return new Intl.NumberFormat('ar-YE').format(val);
-  };
 
   const handlePrint = () => {
     window.print();
@@ -180,8 +176,8 @@ export const StatementPrintModal: React.FC<StatementPrintModalProps> = ({
 
               <div className="text-left text-[11px] sm:text-xs text-slate-600 space-y-0.5 shrink-0">
                 <div className="font-bold text-slate-900 text-xs sm:text-sm">كشف مالي رسمي معتمد</div>
-                <div>تاريخ الاستخراج: <span className="font-mono font-bold text-slate-800">{new Date().toISOString().split('T')[0]}</span></div>
-                <div>وقت الإصدار: <span className="font-mono text-slate-800">{new Date().toLocaleTimeString('ar-YE')}</span></div>
+                <div>تاريخ الاستخراج: <span className="font-mono font-bold text-slate-800">{formatDate(new Date())}</span></div>
+                <div>وقت الإصدار: <span className="font-mono text-slate-800">{formatTime(new Date())}</span></div>
               </div>
             </div>
 
@@ -197,7 +193,7 @@ export const StatementPrintModal: React.FC<StatementPrintModalProps> = ({
             {metadata.map((m, idx) => (
               <div key={idx} className="space-y-0.5 min-w-0">
                 <span className="text-slate-500 block text-[11px] truncate">{m.label}:</span>
-                <span className="font-bold text-slate-900 font-mono break-words">{m.value}</span>
+                <span className="font-bold text-slate-900 font-mono break-words">{toWesternDigits(m.value)}</span>
               </div>
             ))}
           </div>
@@ -272,14 +268,14 @@ export const StatementPrintModal: React.FC<StatementPrintModalProps> = ({
                                 'text-slate-800'
                               }`}
                             >
-                              {isNumeric ? (val !== 0 ? formatMoney(val) : '-') : (val || '-')}
+                              {isNumeric ? (val !== 0 ? formatMoney(val) : '-') : (toWesternDigits(val) || '-')}
                             </td>
                           );
                         })
                       ) : (
                         <>
-                          <td className="py-2 px-3 font-mono text-slate-700">{tx.date}</td>
-                          <td className="py-2 px-3 font-mono font-bold text-slate-900">{tx.reference}</td>
+                          <td className="py-2 px-3 font-mono text-slate-700">{formatDate(tx.date)}</td>
+                          <td className="py-2 px-3 font-mono font-bold text-slate-900">{toWesternDigits(tx.reference)}</td>
                           <td className="py-2 px-3 text-slate-800">{tx.description}</td>
                           <td className="py-2 px-3 text-left font-mono font-bold text-amber-700">
                             {tx.debit > 0 ? formatMoney(tx.debit) : '-'}
@@ -357,7 +353,7 @@ export const StatementPrintModal: React.FC<StatementPrintModalProps> = ({
 
           {/* Document Footer Note */}
           <div className="mt-8 text-center text-[10px] text-slate-400 print-avoid-break">
-            تم استخراج هذا الكشف آلياً من نظام Smart Property ERP المحاسبي • كافة الأرصدة والقيود مطابقة دفترياً مع قاعدة بيانات MySQL
+            تم استخراج هذا الكشف آلياً من نظام Smart Property ERP المحاسبي • كافة الأرصدة والقيود مطابقة دفترياً مع قاعدة البيانات
           </div>
         </div>
       </div>

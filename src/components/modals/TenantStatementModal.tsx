@@ -12,6 +12,7 @@ import {
   Building2
 } from 'lucide-react';
 import { Tenant, Invoice, PaymentReceipt } from '../../types/erp';
+import { formatMoney, formatDate } from '../../utils/formatters';
 
 interface TenantStatementModalProps {
   tenant: Tenant | null;
@@ -29,8 +30,6 @@ export const TenantStatementModal: React.FC<TenantStatementModalProps> = ({
   if (!tenant) return null;
 
   const [activeAccountTab, setActiveAccountTab] = useState<'ALL' | 'RENT' | 'WATER' | 'ELECTRICITY' | 'DEPOSITS'>('ALL');
-
-  const formatMoney = (val: number) => new Intl.NumberFormat('ar-YE').format(val);
 
   // Filter invoices and receipts for this tenant
   const tenantInvoices = invoices.filter(inv => {
@@ -208,7 +207,7 @@ export const TenantStatementModal: React.FC<TenantStatementModalProps> = ({
                       {inv.type === 'SERVICES' && 'خدمات'}
                     </td>
                     <td className="p-2.5 text-slate-600">{inv.period}</td>
-                    <td className="p-2.5 font-mono text-slate-600">{inv.dueDate}</td>
+                    <td className="p-2.5 font-mono text-slate-600">{formatDate(inv.dueDate)}</td>
                     <td className="p-2.5 font-mono font-bold text-slate-900 text-left">{formatMoney(inv.totalAmount)}</td>
                     <td className="p-2.5 font-mono text-emerald-700 text-left">{formatMoney(inv.paidAmount)}</td>
                     <td className="p-2.5 font-mono font-bold text-rose-700 text-left">{formatMoney(inv.remainingAmount)}</td>

@@ -4,6 +4,7 @@ import {
   Building, Home, ArrowUpRight, ArrowDownLeft, RefreshCw, FileText
 } from 'lucide-react';
 import { api } from '../../../services/api';
+import { formatMoney, formatNumber, formatDate, toWesternDigits } from '../../../utils/formatters';
 import { exportStatementToExcel } from './excelExport';
 
 interface TenantStatementViewProps {
@@ -32,8 +33,6 @@ export const TenantStatementView: React.FC<TenantStatementViewProps> = ({
   const [statementData, setStatementData] = useState<any>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
-
-  const formatMoney = (val: number) => new Intl.NumberFormat('ar-YE').format(val || 0);
 
   const fetchStatement = async () => {
     if (!selectedTenantId) return;
@@ -110,7 +109,7 @@ export const TenantStatementView: React.FC<TenantStatementViewProps> = ({
         'إجمالي المدين:': `${formatMoney(statementData.totalDebits)} ر.ي`,
         'إجمالي الدائن:': `${formatMoney(statementData.totalCredits)} ر.ي`,
         'الرصيد الختامي المستحق:': `${formatMoney(statementData.closingBalance)} ر.ي`,
-        'تاريخ الكشف:': `${dateFrom || 'البداية'} إلى ${dateTo || 'حتى اليوم'}`
+        'تاريخ الكشف:': `${dateFrom ? formatDate(dateFrom) : 'البداية'} إلى ${dateTo ? formatDate(dateTo) : 'حتى اليوم'}`
       },
       headers,
       data: rows
@@ -123,11 +122,11 @@ export const TenantStatementView: React.FC<TenantStatementViewProps> = ({
 
     onOpenPrint({
       title: `كشف حساب العميل / المستأجر: ${t.name}`,
-      subtitle: `كود المستأجر: ${t.tenantCode} • هاتف: ${t.phone || '-'}`,
+      subtitle: `كود المستأجر: ${toWesternDigits(t.tenantCode)} • هاتف: ${toWesternDigits(t.phone) || '-'}`,
       metadata: [
         { label: 'المستأجر', value: t.name },
-        { label: 'كود المستأجر', value: t.tenantCode },
-        { label: 'الفترة المحددة', value: `${dateFrom || 'من البداية'} إلى ${dateTo || 'تاريخ اليوم'}` },
+        { label: 'كود المستأجر', value: toWesternDigits(t.tenantCode) },
+        { label: 'الفترة المحددة', value: `${dateFrom ? formatDate(dateFrom) : 'من البداية'} إلى ${dateTo ? formatDate(dateTo) : 'تاريخ اليوم'}` },
         { label: 'نوع الحساب', value: selectedAccountType === 'ALL' ? 'كافة الذمم المشتركة' : selectedAccountType },
         { label: 'الرصيد الافتتاحي', value: `${formatMoney(statementData.openingBalance)} ر.ي` },
         { label: 'إجمالي المدين', value: `${formatMoney(statementData.totalDebits)} ر.ي` },
@@ -238,7 +237,7 @@ export const TenantStatementView: React.FC<TenantStatementViewProps> = ({
               onClick={fetchStatement}
               disabled={loading}
               className="p-2.5 border border-slate-300 hover:bg-slate-100 text-slate-700 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center justify-center min-h-[40px] min-w-[40px]"
-              title="تحديث البيانات من MySQL"
+              title="تحديث البيانات من قاعدة البيانات"
             >
               <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin text-blue-600' : ''}`} />
             </button>
@@ -352,7 +351,7 @@ export const TenantStatementView: React.FC<TenantStatementViewProps> = ({
           <div className="p-4 bg-white border border-slate-200 rounded-2xl shadow-xs">
             <span className="text-[11px] font-bold text-slate-400 block mb-1">عدد القيود المحاسبية</span>
             <div className="text-lg font-black font-mono text-slate-900">
-              {statementData.transactions?.length || 0}
+              {formatNumber(statementData.transactions?.length || 0)}
             </div>
             <span className="text-[10px] text-slate-400 mt-1 block">قيود مرحلة بدفتر الأستاذ</span>
           </div>
@@ -396,7 +395,7 @@ export const TenantStatementView: React.FC<TenantStatementViewProps> = ({
               {statementData && statementData.openingBalance !== 0 && (
                 <tr className="bg-blue-50/50 font-medium text-slate-700">
                   <td className="py-2.5 px-3 text-center font-mono text-[11px]">-</td>
-                  <td className="py-2.5 px-3 font-mono">{dateFrom || '-'}</td>
+                  <td className="py-2.5 px-3 font-mono">{dateFrom ? formatDate(dateFrom) : '-'}</td>
                   <td className="py-2.5 px-3 font-mono font-bold text-blue-900">OPENING-BAL</td>
                   <td className="py-2.5 px-3"><span className="px-2 py-0.5 bg-blue-100 text-blue-800 rounded text-xs font-bold">رصيد سابق</span></td>
                   <td className="py-2.5 px-4 font-bold text-blue-950">الرصيد الافتتاحي المرحل قبل الفترة المحددة</td>
@@ -418,7 +417,7 @@ export const TenantStatementView: React.FC<TenantStatementViewProps> = ({
                 <tr>
                   <td colSpan={10} className="py-12 text-center text-slate-400">
                     <div className="w-7 h-7 border-2 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-2"></div>
-                    <span>جاري تحميل بيانات كشف الحساب من MySQL...</span>
+                    <span>جاري تحميل بيانات كشف الحساب من قاعدة البيانات...</span>
                   </td>
                 </tr>
               ) : !statementData || statementData.transactions?.length === 0 ? (
@@ -436,10 +435,10 @@ export const TenantStatementView: React.FC<TenantStatementViewProps> = ({
                       className={`hover:bg-slate-50/80 transition-colors ${isReversal ? 'bg-rose-50/30' : ''}`}
                     >
                       <td className="py-2.5 px-3 text-center text-slate-400 font-mono text-[11px]">{idx + 1}</td>
-                      <td className="py-2.5 px-3 font-mono text-slate-700">{tx.date}</td>
+                      <td className="py-2.5 px-3 font-mono text-slate-700">{formatDate(tx.date)}</td>
                       <td className="py-2.5 px-3 font-mono font-bold text-slate-900">
                         <div className="flex items-center gap-1.5">
-                          <span>{tx.reference}</span>
+                          <span>{toWesternDigits(tx.reference)}</span>
                           {isReversal && (
                             <span className="text-[10px] bg-rose-100 text-rose-700 px-1.5 py-0.2 rounded font-sans font-bold">عكس</span>
                           )}
