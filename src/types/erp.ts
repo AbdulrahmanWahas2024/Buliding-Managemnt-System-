@@ -527,3 +527,160 @@ export interface DashboardStats {
   monthlyWaterCost: number;
   monthlyElectricityBilling: number;
 }
+
+// ==========================================
+// COLLECTIONS / CASH BOXES MODULE TYPES
+// ==========================================
+
+export interface CollectionCenter {
+  id: string;
+  code: string;
+  name: string;
+  propertyId?: string;
+  propertyName?: string;
+  location?: string;
+  managerName?: string;
+  phone?: string;
+  status: 'ACTIVE' | 'INACTIVE';
+  notes?: string;
+  cashBoxCount?: number;
+  createdBy?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface CashBox {
+  id: string;
+  code: string;
+  name: string;
+  centerId: string;
+  centerName?: string;
+  cashierId?: string;
+  cashierName?: string;
+  currency: 'YER' | 'SAR' | 'USD';
+  openingBalance: number;
+  currentBalance: number;
+  status: 'ACTIVE' | 'INACTIVE' | 'CLOSED';
+  notes?: string;
+  todayCollections?: number;
+  createdBy?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface CashBoxClosing {
+  id: string;
+  closingNumber: string;
+  cashBoxId: string;
+  cashBoxName: string;
+  centerId: string;
+  centerName?: string;
+  cashierId: string;
+  cashierName: string;
+  closingDate: string;
+  openingBalance: number;
+  totalCollected: number;
+  expectedCash: number;
+  actualCash: number;
+  difference: number;
+  status: 'CLOSED' | 'AUDITED' | 'RECONCILED';
+  notes?: string;
+  closedAt?: string;
+}
+
+export interface CollectionReceiptRecord {
+  id: string;
+  receiptNumber: string;
+  invoiceId: string;
+  invoiceNumber?: string;
+  tenantId: string;
+  tenantName: string;
+  tenantPhone?: string;
+  unitId?: string;
+  unitNumber: string;
+  propertyId?: string;
+  propertyName: string;
+  contractId?: string;
+  accountType: 'RENT' | 'WATER' | 'ELECTRICITY' | 'SERVICES' | 'UNIFIED' | 'OTHER';
+  amountPaid: number;
+  paymentMethod: 'CASH' | 'BANK_TRANSFER' | 'CHECK' | 'ELECTRONIC_WALLET' | 'OTHER';
+  collectorId: string;
+  collectorName: string;
+  collectedAt: string;
+  centerId?: string;
+  centerName?: string;
+  cashBoxId?: string;
+  cashBoxName?: string;
+  status: 'COMPLETED' | 'CANCELLED' | 'REVERSED';
+  cancelledAt?: string;
+  cancelledBy?: string;
+  cancellationReason?: string;
+  reversedAt?: string;
+  reversedBy?: string;
+  reversalReason?: string;
+  reversalReceiptId?: string;
+  checkNumber?: string;
+  bankName?: string;
+  transferReference?: string;
+  notes?: string;
+  qrCodeContent?: string;
+  createdAt?: string;
+}
+
+export interface ReceivableItem {
+  id: string;
+  invoiceNumber: string;
+  tenantId: string;
+  tenantName: string;
+  tenantPhone?: string;
+  propertyId: string;
+  propertyName: string;
+  unitId: string;
+  unitNumber: string;
+  contractId?: string;
+  contractNumber?: string;
+  accountType: 'RENT' | 'WATER' | 'ELECTRICITY' | 'SERVICES' | 'UNIFIED' | 'OTHER';
+  dueDate: string;
+  issueDate: string;
+  totalAmount: number;
+  paidAmount: number;
+  remainingAmount: number;
+  status: 'UNPAID' | 'PARTIALLY_PAID' | 'OVERDUE' | 'PAID' | 'CANCELLED';
+  daysOverdue?: number;
+  period?: string;
+  notes?: string;
+}
+
+export interface CollectionDashboardStats {
+  totalOutstandingReceivables: number;
+  totalCollectedToday: number;
+  totalCollectedThisMonth: number;
+  receiptsCountToday: number;
+  tenantsWithDueCount: number;
+  centersCount: number;
+  activeCashBoxesCount: number;
+  totalCurrentCashInBoxes: number;
+  cashBoxesSummary: Array<{
+    id: string;
+    code: string;
+    name: string;
+    centerName: string;
+    cashierName: string;
+    currentBalance: number;
+    currency: string;
+    status: string;
+  }>;
+  recentReceipts: CollectionReceiptRecord[];
+  collectionsByMethod: Array<{
+    method: string;
+    methodLabel: string;
+    count: number;
+    totalAmount: number;
+  }>;
+  collectionsByAccountType: Array<{
+    type: string;
+    typeLabel: string;
+    count: number;
+    totalAmount: number;
+  }>;
+}

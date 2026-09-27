@@ -30,11 +30,11 @@ export const ElectricityPostingModal: React.FC<Props> = ({
   onSuccess,
   reading
 }) => {
-  if (!isOpen || !reading) return null;
-
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successResult, setSuccessResult] = useState<any | null>(null);
+
+  if (!isOpen || !reading) return null;
 
   // Validations:
   const hasTenant = Boolean(reading.tenantId || (reading.tenantName && reading.tenantName.trim().length > 0));

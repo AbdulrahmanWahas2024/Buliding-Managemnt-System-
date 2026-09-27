@@ -41,6 +41,8 @@ import { ContractsModule } from './components/modules/ContractsModule';
 import { RentBillingModule } from './components/modules/RentBillingModule';
 import { WaterCostManagementModule } from './components/modules/water/WaterCostManagementModule';
 import { ElectricityModule } from './components/modules/electricity/ElectricityModule';
+import { CollectionsModule } from './components/modules/collections/CollectionsModule';
+import { StatementsModule } from './components/modules/statements/StatementsModule';
 
 import { 
   CURRENT_USER, 
@@ -321,6 +323,18 @@ export default function App() {
               onNavigateToProperty={(propertyId) => setActiveTab('properties')}
               onRefreshGlobalStats={loadDatabaseData}
             />
+          ) : activeTab === 'collections' ? (
+            <CollectionsModule 
+              onNavigateToTenant={(tenantId) => setActiveTab('tenants')}
+              onNavigateToProperty={(propertyId) => setActiveTab('properties')}
+              onRefreshGlobalStats={loadDatabaseData}
+            />
+          ) : activeTab === 'statements' ? (
+            <StatementsModule 
+              onNavigateToTenant={(tenantId) => setActiveTab('tenants')}
+              onNavigateToProperty={(propertyId) => setActiveTab('properties')}
+              onRefreshGlobalStats={loadDatabaseData}
+            />
           ) : activeTab === 'dashboard' ? (
             <>
               {/* Welcome & System Summary Ribbon */}
@@ -413,6 +427,7 @@ export default function App() {
               <RecentCollections 
                 receipts={receipts}
                 onPrintReceipt={(receipt) => setReceiptToPrint(receipt)}
+                onManageAll={() => setActiveTab('collections')}
               />
             </>
           ) : (

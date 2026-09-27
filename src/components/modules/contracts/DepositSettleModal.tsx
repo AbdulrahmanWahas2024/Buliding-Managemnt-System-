@@ -9,9 +9,7 @@ interface DepositSettleModalProps {
 }
 
 export const DepositSettleModal: React.FC<DepositSettleModalProps> = ({ deposit, onClose, onSuccess }) => {
-  if (!deposit) return null;
-
-  const currentBalance = Number(deposit.amount || deposit.depositAmount || 0) - Number(deposit.refundedAmount || 0);
+  const currentBalance = Number(deposit?.amount || deposit?.depositAmount || 0) - Number(deposit?.refundedAmount || 0);
 
   const [refundAmount, setRefundAmount] = useState<number>(currentBalance);
   const [deductAmount, setDeductAmount] = useState<number>(0);
@@ -19,6 +17,8 @@ export const DepositSettleModal: React.FC<DepositSettleModalProps> = ({ deposit,
   const [notes, setNotes] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  if (!deposit) return null;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

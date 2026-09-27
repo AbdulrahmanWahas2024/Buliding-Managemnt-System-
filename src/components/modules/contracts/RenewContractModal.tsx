@@ -10,20 +10,20 @@ interface RenewContractModalProps {
 }
 
 export const RenewContractModal: React.FC<RenewContractModalProps> = ({ contract, onClose, onSuccess }) => {
-  if (!contract) return null;
-
   // Calculate default new end date (e.g. 1 year from current end date)
-  const currentEnd = new Date(contract.endDate);
+  const currentEnd = new Date(contract?.endDate || new Date());
   const nextYearEnd = new Date(currentEnd);
   nextYearEnd.setFullYear(nextYearEnd.getFullYear() + 1);
   const defaultNextEnd = nextYearEnd.toISOString().split('T')[0];
 
   const [newEndDate, setNewEndDate] = useState<string>(defaultNextEnd);
-  const [newRentAmount, setNewRentAmount] = useState<number>(contract.rentAmount);
-  const [paymentCycle, setPaymentCycle] = useState<string>(contract.paymentCycle);
+  const [newRentAmount, setNewRentAmount] = useState<number>(contract?.rentAmount || 0);
+  const [paymentCycle, setPaymentCycle] = useState<string>(contract?.paymentCycle || 'MONTHLY');
   const [notes, setNotes] = useState<string>('تجديد سنوي للفترة القادمة');
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  if (!contract) return null;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

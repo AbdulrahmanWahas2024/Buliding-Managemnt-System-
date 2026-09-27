@@ -16,17 +16,17 @@ export const MeterReplacementModal: React.FC<Props> = ({
   onSuccess,
   oldMeter
 }) => {
-  if (!isOpen || !oldMeter) return null;
-
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const [newMeterNumber, setNewMeterNumber] = useState('');
-  const [finalReadingOld, setFinalReadingOld] = useState<number | string>(oldMeter.currentReading || 0);
+  const [finalReadingOld, setFinalReadingOld] = useState<number | string>(oldMeter?.currentReading || 0);
   const [initialReadingNew, setInitialReadingNew] = useState<number | string>(0);
   const [replacementDate, setReplacementDate] = useState(new Date().toISOString().slice(0, 10));
   const [reason, setReason] = useState('عطل فني في العداد القديم');
   const [notes, setNotes] = useState('');
+
+  if (!isOpen || !oldMeter) return null;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

@@ -10,8 +10,6 @@ interface TerminateContractModalProps {
 }
 
 export const TerminateContractModal: React.FC<TerminateContractModalProps> = ({ contract, onClose, onSuccess }) => {
-  if (!contract) return null;
-
   const [terminationDate, setTerminationDate] = useState<string>(new Date().toISOString().split('T')[0]);
   const [reason, setReason] = useState<string>('انتهاء المدة التعاقدية ورغبة الطرفين بالإخلاء');
   const [depositAction, setDepositAction] = useState<'FULL_REFUND' | 'PARTIAL_DEDUCT' | 'FULL_DEDUCT' | 'NO_ACTION'>('FULL_REFUND');
@@ -19,6 +17,8 @@ export const TerminateContractModal: React.FC<TerminateContractModalProps> = ({ 
   const [notes, setNotes] = useState<string>('تم فحص الوحدة واستلام المفاتيح');
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  if (!contract) return null;
 
   const depositTotal = contract.depositAmount || 0;
   const calculatedRefund = depositAction === 'FULL_REFUND' ? depositTotal :

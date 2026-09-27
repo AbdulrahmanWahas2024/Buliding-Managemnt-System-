@@ -52,24 +52,38 @@ export async function ensureMySQLRunning(): Promise<boolean> {
 
   console.log('Ensuring MariaDB/MySQL is installed and daemon running in container...');
   try {
-    // If neither mariadbd nor mysqld binary exists, install mariadb-server
-    const hasBinary = fs.existsSync('/usr/sbin/mariadbd') || fs.existsSync('/usr/sbin/mysqld');
-    if (!hasBinary) {
+    const candidateBinaries = ['/usr/sbin/mariadbd', '/usr/sbin/mysqld', '/usr/bin/mariadbd', '/usr/bin/mysqld'];
+    let binary = candidateBinaries.find((p) => fs.existsSync(p));
+
+    if (!binary) {
       console.log('Installing MariaDB packages via apt-get...');
-      execSync('DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y mariadb-server mariadb-client');
+      try {
+        execSync('DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends mariadb-server mariadb-client', { stdio: 'ignore' });
+      } catch (e: any) {
+        console.warn('apt-get install notice:', e.message);
+      }
+      binary = candidateBinaries.find((p) => fs.existsSync(p));
     }
 
-    execSync('mkdir -p /run/mysqld /var/lib/mysql && chown -R mysql:mysql /run/mysqld /var/lib/mysql 2>/dev/null || true');
+    try {
+      execSync('mkdir -p /run/mysqld /var/lib/mysql && chown -R mysql:mysql /run/mysqld /var/lib/mysql 2>/dev/null || true');
+    } catch {}
+
     // Ensure initial system tables exist
-    execSync('[ ! -d /var/lib/mysql/mysql ] && (mariadb-install-db --user=mysql --datadir=/var/lib/mysql 2>/dev/null || mysql_install_db --user=mysql --datadir=/var/lib/mysql 2>/dev/null || true)');
+    if (!fs.existsSync('/var/lib/mysql/mysql')) {
+      try {
+        execSync('mariadb-install-db --user=mysql --datadir=/var/lib/mysql 2>/dev/null || mysql_install_db --user=mysql --datadir=/var/lib/mysql 2>/dev/null || true');
+      } catch {}
+    }
     
     // Start daemon in background as detached process
-    const binary = fs.existsSync('/usr/sbin/mariadbd') ? '/usr/sbin/mariadbd' : '/usr/sbin/mysqld';
-    const child = spawn(binary, ['--user=mysql', '--bind-address=0.0.0.0', '--port=3306'], {
-      detached: true,
-      stdio: 'ignore'
-    });
-    child.unref();
+    if (binary) {
+      const child = spawn(binary, ['--user=mysql', '--bind-address=0.0.0.0', '--port=3306', '--skip-grant-tables'], {
+        detached: true,
+        stdio: 'ignore'
+      });
+      child.unref();
+    }
 
     // Wait up to 10 seconds for port to open
     for (let i = 0; i < 40; i++) {
@@ -528,13 +542,152 @@ export async function initDatabaseSchema() {
       collector_id VARCHAR(50) NOT NULL,
       collector_name VARCHAR(100) NOT NULL,
       collected_at DATETIME NOT NULL,
+      center_id VARCHAR(50) NULL,
+      center_name VARCHAR(150) NULL,
+      cash_box_id VARCHAR(50) NULL,
+      cash_box_name VARCHAR(100) NULL,
+      property_id VARCHAR(50) NULL,
+      unit_id VARCHAR(50) NULL,
+      contract_id VARCHAR(50) NULL,
+      status VARCHAR(50) NOT NULL DEFAULT 'COMPLETED',
+      cancelled_at DATETIME NULL,
+      cancelled_by VARCHAR(100) NULL,
+      cancellation_reason TEXT NULL,
+      reversed_at DATETIME NULL,
+      reversed_by VARCHAR(100) NULL,
+      reversal_reason TEXT NULL,
+      reversal_receipt_id VARCHAR(50) NULL,
+      check_number VARCHAR(50) NULL,
+      bank_name VARCHAR(100) NULL,
+      transfer_reference VARCHAR(100) NULL,
       notes TEXT,
       qr_code_content TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       INDEX idx_pay_tenant (tenant_id),
-      INDEX idx_pay_inv (invoice_id)
+      INDEX idx_pay_inv (invoice_id),
+      INDEX idx_pay_box (cash_box_id),
+      INDEX idx_pay_center (center_id),
+      INDEX idx_pay_status (status)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
   `);
+
+  await p.query(`
+    ALTER TABLE payments
+      ADD COLUMN IF NOT EXISTS center_id VARCHAR(50) NULL,
+      ADD COLUMN IF NOT EXISTS center_name VARCHAR(150) NULL,
+      ADD COLUMN IF NOT EXISTS cash_box_id VARCHAR(50) NULL,
+      ADD COLUMN IF NOT EXISTS cash_box_name VARCHAR(100) NULL,
+      ADD COLUMN IF NOT EXISTS property_id VARCHAR(50) NULL,
+      ADD COLUMN IF NOT EXISTS unit_id VARCHAR(50) NULL,
+      ADD COLUMN IF NOT EXISTS contract_id VARCHAR(50) NULL,
+      ADD COLUMN IF NOT EXISTS status VARCHAR(50) NOT NULL DEFAULT 'COMPLETED',
+      ADD COLUMN IF NOT EXISTS cancelled_at DATETIME NULL,
+      ADD COLUMN IF NOT EXISTS cancelled_by VARCHAR(100) NULL,
+      ADD COLUMN IF NOT EXISTS cancellation_reason TEXT NULL,
+      ADD COLUMN IF NOT EXISTS reversed_at DATETIME NULL,
+      ADD COLUMN IF NOT EXISTS reversed_by VARCHAR(100) NULL,
+      ADD COLUMN IF NOT EXISTS reversal_reason TEXT NULL,
+      ADD COLUMN IF NOT EXISTS reversal_receipt_id VARCHAR(50) NULL,
+      ADD COLUMN IF NOT EXISTS check_number VARCHAR(50) NULL,
+      ADD COLUMN IF NOT EXISTS bank_name VARCHAR(100) NULL,
+      ADD COLUMN IF NOT EXISTS transfer_reference VARCHAR(100) NULL;
+  `).catch(() => {});
+
+  // 9.1 Collection Centers
+  await p.query(`
+    CREATE TABLE IF NOT EXISTS collection_centers (
+      id VARCHAR(50) PRIMARY KEY,
+      code VARCHAR(50) UNIQUE NOT NULL,
+      name VARCHAR(150) NOT NULL,
+      property_id VARCHAR(50) NULL,
+      property_name VARCHAR(150) NULL,
+      location VARCHAR(255) NULL,
+      manager_name VARCHAR(100) NULL,
+      phone VARCHAR(50) NULL,
+      status VARCHAR(50) NOT NULL DEFAULT 'ACTIVE',
+      notes TEXT NULL,
+      created_by VARCHAR(100) NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      INDEX idx_center_prop (property_id),
+      INDEX idx_center_status (status)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+  `);
+
+  // 9.2 Cash Boxes
+  await p.query(`
+    CREATE TABLE IF NOT EXISTS cash_boxes (
+      id VARCHAR(50) PRIMARY KEY,
+      code VARCHAR(50) UNIQUE NOT NULL,
+      name VARCHAR(150) NOT NULL,
+      center_id VARCHAR(50) NOT NULL,
+      center_name VARCHAR(150) NULL,
+      cashier_id VARCHAR(50) NULL,
+      cashier_name VARCHAR(100) NULL,
+      currency VARCHAR(20) NOT NULL DEFAULT 'YER',
+      opening_balance DECIMAL(18,2) NOT NULL DEFAULT 0.00,
+      current_balance DECIMAL(18,2) NOT NULL DEFAULT 0.00,
+      status VARCHAR(50) NOT NULL DEFAULT 'ACTIVE',
+      notes TEXT NULL,
+      created_by VARCHAR(100) NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      INDEX idx_box_center (center_id),
+      INDEX idx_box_cashier (cashier_id),
+      INDEX idx_box_status (status)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+  `);
+
+  // 9.3 Cash Box Closings
+  await p.query(`
+    CREATE TABLE IF NOT EXISTS cash_box_closings (
+      id VARCHAR(50) PRIMARY KEY,
+      closing_number VARCHAR(50) UNIQUE NOT NULL,
+      cash_box_id VARCHAR(50) NOT NULL,
+      cash_box_name VARCHAR(150) NOT NULL,
+      center_id VARCHAR(50) NOT NULL,
+      center_name VARCHAR(150) NULL,
+      cashier_id VARCHAR(50) NOT NULL,
+      cashier_name VARCHAR(100) NOT NULL,
+      closing_date DATE NOT NULL,
+      opening_balance DECIMAL(18,2) NOT NULL DEFAULT 0.00,
+      total_collected DECIMAL(18,2) NOT NULL DEFAULT 0.00,
+      expected_cash DECIMAL(18,2) NOT NULL DEFAULT 0.00,
+      actual_cash DECIMAL(18,2) NOT NULL DEFAULT 0.00,
+      difference DECIMAL(18,2) NOT NULL DEFAULT 0.00,
+      status VARCHAR(50) NOT NULL DEFAULT 'CLOSED',
+      notes TEXT NULL,
+      closed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_close_box (cash_box_id),
+      INDEX idx_close_date (closing_date)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+  `);
+
+  // Seed default collection centers if empty
+  const [centerRows]: any = await p.query('SELECT COUNT(*) as cnt FROM collection_centers').catch(() => [[{ cnt: 0 }]]);
+  if (!centerRows || Number(centerRows[0]?.cnt || 0) === 0) {
+    await p.query(`
+      INSERT INTO collection_centers 
+      (id, code, name, property_id, property_name, location, manager_name, phone, status, notes, created_by)
+      VALUES 
+      ('cnt-01', 'CNT-MAIN', 'مركز التحصيل الرئيسي - الإدارة العامة', 'prop-01', 'برج السلام السكني والتجاري', 'شارع الستين الجنوبي - مبنى الإدارة العامة', 'م. أحمد الوهاس', '+967 777 000 000', 'ACTIVE', 'المركز المالي الرئيسي لعمليات التحصيل والإيداع الخزني', 'النظام'),
+      ('cnt-02', 'CNT-ANDL', 'فرع تحصيل مجمع الأندلس', 'prop-02', 'مجمع الأندلس السكني', 'حي الأصبحي - البوابة الغربية', 'عصام العديني', '+967 771 222 333', 'ACTIVE', 'مركز تحصيل ميداني مباشر لسكان ومستأجري مجمع الأندلس', 'النظام'),
+      ('cnt-03', 'CNT-ROWA', 'نقطة تحصيل مركز الرواد التجاري', 'prop-03', 'مركز الرواد التجاري', 'شارع الزبيري - الصالة المالية 1', 'سمير القباطي', '+967 773 444 555', 'ACTIVE', 'نقطة استلام إيرادات المحلات والمعارض التجارية', 'النظام')
+    `).catch(() => {});
+  }
+
+  // Seed default cash boxes if empty
+  const [boxRows]: any = await p.query('SELECT COUNT(*) as cnt FROM cash_boxes').catch(() => [[{ cnt: 0 }]]);
+  if (!boxRows || Number(boxRows[0]?.cnt || 0) === 0) {
+    await p.query(`
+      INSERT INTO cash_boxes 
+      (id, code, name, center_id, center_name, cashier_id, cashier_name, currency, opening_balance, current_balance, status, notes, created_by)
+      VALUES 
+      ('box-01', 'BOX-MAIN-01', 'صندوق الخزينة الرئيسي (ريال يمني)', 'cnt-01', 'مركز التحصيل الرئيسي - الإدارة العامة', 'usr-1', 'م. أحمد الوهاس', 'YER', 500000.00, 500000.00, 'ACTIVE', 'الصندوق النقدي الرئيسي للإدارة واستلام كافة الذمم', 'النظام'),
+      ('box-02', 'BOX-ANDL-01', 'صندوق تحصيل مجمع الأندلس', 'cnt-02', 'فرع تحصيل مجمع الأندلس', 'usr-1', 'عصام العديني', 'YER', 150000.00, 150000.00, 'ACTIVE', 'صندوق الكاشير اليومي للفرع السكني بالأندلس', 'النظام'),
+      ('box-03', 'BOX-ROWA-01', 'صندوق تحصيل مركز الرواد', 'cnt-03', 'نقطة تحصيل مركز الرواد التجاري', 'usr-1', 'سمير القباطي', 'YER', 200000.00, 200000.00, 'ACTIVE', 'صندوق تحصيل إيرادات المعارض والمكاتب التجارية', 'النظام')
+    `).catch(() => {});
+  }
 
   // 10. Tenant Ledger (Journal Entries by Account Type)
   await p.query(`
@@ -549,12 +702,38 @@ export async function initDatabaseSchema() {
       balance_after DECIMAL(18,2) NOT NULL DEFAULT 0.00,
       description VARCHAR(255) NOT NULL,
       user_id VARCHAR(50) NOT NULL,
+      property_id VARCHAR(50) NULL,
+      property_name VARCHAR(150) NULL,
+      unit_id VARCHAR(50) NULL,
+      unit_number VARCHAR(50) NULL,
+      contract_id VARCHAR(50) NULL,
+      invoice_id VARCHAR(50) NULL,
+      payment_id VARCHAR(50) NULL,
+      source_module VARCHAR(50) NOT NULL DEFAULT 'MANUAL',
+      status VARCHAR(50) NOT NULL DEFAULT 'POSTED',
+      reversal_of VARCHAR(100) NULL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       INDEX idx_ledg_tenant (tenant_id),
       INDEX idx_ledg_type (account_type),
-      INDEX idx_ledg_date (date)
+      INDEX idx_ledg_date (date),
+      INDEX idx_ledg_prop (property_id),
+      INDEX idx_ledg_unit (unit_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
   `);
+
+  await p.query(`
+    ALTER TABLE tenant_ledger 
+      ADD COLUMN IF NOT EXISTS property_id VARCHAR(50) NULL,
+      ADD COLUMN IF NOT EXISTS property_name VARCHAR(150) NULL,
+      ADD COLUMN IF NOT EXISTS unit_id VARCHAR(50) NULL,
+      ADD COLUMN IF NOT EXISTS unit_number VARCHAR(50) NULL,
+      ADD COLUMN IF NOT EXISTS contract_id VARCHAR(50) NULL,
+      ADD COLUMN IF NOT EXISTS invoice_id VARCHAR(50) NULL,
+      ADD COLUMN IF NOT EXISTS payment_id VARCHAR(50) NULL,
+      ADD COLUMN IF NOT EXISTS source_module VARCHAR(50) NOT NULL DEFAULT 'MANUAL',
+      ADD COLUMN IF NOT EXISTS status VARCHAR(50) NOT NULL DEFAULT 'POSTED',
+      ADD COLUMN IF NOT EXISTS reversal_of VARCHAR(100) NULL;
+  `).catch(() => {});
 
   // 11. Water Operating Costs & Periods
   await p.query(`

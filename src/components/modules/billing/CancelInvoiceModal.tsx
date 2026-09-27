@@ -20,11 +20,11 @@ export const CancelInvoiceModal: React.FC<CancelInvoiceModalProps> = ({
   onClose,
   onSuccess
 }) => {
-  if (!invoice) return null;
-
   const [cancellationReason, setCancellationReason] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  if (!invoice) return null;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

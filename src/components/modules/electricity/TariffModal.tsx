@@ -18,8 +18,6 @@ export const TariffModal: React.FC<Props> = ({
   tariffToEdit,
   properties
 }) => {
-  if (!isOpen) return null;
-
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -51,6 +49,8 @@ export const TariffModal: React.FC<Props> = ({
     }
     setError(null);
   }, [tariffToEdit]);
+
+  if (!isOpen) return null;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

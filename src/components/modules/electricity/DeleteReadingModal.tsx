@@ -27,11 +27,11 @@ export const DeleteReadingModal: React.FC<Props> = ({
   reading,
   onNavigateToBilling
 }) => {
-  if (!isOpen || !reading) return null;
-
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
+
+  if (!isOpen || !reading) return null;
 
   const isBilled = reading.status === 'BILLED' || Boolean(reading.invoiceId) || Boolean(reading.invoiceNumber);
 

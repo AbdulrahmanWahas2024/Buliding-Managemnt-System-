@@ -21,15 +21,15 @@ export const EditInvoiceModal: React.FC<EditInvoiceModalProps> = ({
   onClose,
   onSuccess
 }) => {
-  if (!invoice) return null;
-
-  const [additionalCharges, setAdditionalCharges] = useState<number>(Number(invoice.additionalCharges || 0));
-  const [discount, setDiscount] = useState<number>(Number(invoice.discount || 0));
-  const [dueDate, setDueDate] = useState<string>(invoice.dueDate || '');
-  const [notes, setNotes] = useState<string>(invoice.notes || '');
+  const [additionalCharges, setAdditionalCharges] = useState<number>(Number(invoice?.additionalCharges || 0));
+  const [discount, setDiscount] = useState<number>(Number(invoice?.discount || 0));
+  const [dueDate, setDueDate] = useState<string>(invoice?.dueDate || '');
+  const [notes, setNotes] = useState<string>(invoice?.notes || '');
   
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  if (!invoice) return null;
 
   const baseRent = Number(invoice.baseRent || invoice.totalAmount);
   const newTotal = Math.max(0, baseRent + Number(additionalCharges || 0) - Number(discount || 0));

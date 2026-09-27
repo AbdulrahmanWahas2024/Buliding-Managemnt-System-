@@ -17,11 +17,11 @@ export const ElectricityBillingModal: React.FC<Props> = ({
   onSuccess,
   unbilledReadings
 }) => {
-  if (!isOpen) return null;
-
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>(unbilledReadings.map(r => r.id));
+
+  if (!isOpen) return null;
 
   const toggleSelectAll = () => {
     if (selectedIds.length === unbilledReadings.length) {

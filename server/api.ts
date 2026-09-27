@@ -7285,7 +7285,1470 @@ router.get('/tenant-statement/:tenantId', async (req: Request, res: Response) =>
   }
 });
 
-// 12. Recent Collections API
+// 12. Collections, Cash Boxes, and Collection Centers Module APIs
+// -------------------------------------------------------------
+
+// 12.1 Collection Dashboard KPIs
+router.get('/collections/dashboard', async (req: Request, res: Response) => {
+  try {
+    const pool = await getPool();
+
+    // 1. Total outstanding receivables
+    const [dueRows]: any = await pool.query(`
+      SELECT COALESCE(SUM(remaining_amount), 0) AS total_due,
+             COUNT(DISTINCT tenant_id) AS debtor_count
+      FROM invoices
+      WHERE status IN ('UNPAID', 'PARTIALLY_PAID', 'OVERDUE') AND remaining_amount > 0
+    `);
+
+    // 2. Collections today
+    const [todayRows]: any = await pool.query(`
+      SELECT COALESCE(SUM(amount_paid), 0) AS collected_today,
+             COUNT(*) AS receipts_today
+      FROM payments
+      WHERE DATE(collected_at) = CURDATE() AND status NOT IN ('CANCELLED', 'REVERSED')
+    `);
+
+    // 3. Collections this month
+    const [monthRows]: any = await pool.query(`
+      SELECT COALESCE(SUM(amount_paid), 0) AS collected_month
+      FROM payments
+      WHERE MONTH(collected_at) = MONTH(CURDATE()) AND YEAR(collected_at) = YEAR(CURDATE())
+        AND status NOT IN ('CANCELLED', 'REVERSED')
+    `);
+
+    // 4. Centers count
+    const [centerCountRows]: any = await pool.query(`
+      SELECT COUNT(*) AS active_centers FROM collection_centers WHERE status = 'ACTIVE'
+    `);
+
+    // 5. Cash boxes count & total cash
+    const [boxCountRows]: any = await pool.query(`
+      SELECT COUNT(*) AS active_boxes,
+             COALESCE(SUM(current_balance), 0) AS total_cash
+      FROM cash_boxes
+      WHERE status = 'ACTIVE'
+    `);
+
+    // 6. Cash boxes summary list
+    const [boxesSummaryRows]: any = await pool.query(`
+      SELECT b.id, b.code, b.name, b.center_name, b.cashier_name, b.current_balance, b.currency, b.status
+      FROM cash_boxes b
+      ORDER BY b.created_at ASC
+    `);
+
+    // 7. Recent 10 receipts
+    const [recentReceiptsRows]: any = await pool.query(`
+      SELECT p.*, i.invoice_number, i.remaining_amount AS current_invoice_remaining
+      FROM payments p
+      LEFT JOIN invoices i ON p.invoice_id = i.id
+      ORDER BY p.collected_at DESC
+      LIMIT 10
+    `);
+
+    // 8. Collections by payment method (this month)
+    const [methodRows]: any = await pool.query(`
+      SELECT payment_method,
+             COUNT(*) AS count,
+             COALESCE(SUM(amount_paid), 0) AS total_amount
+      FROM payments
+      WHERE status NOT IN ('CANCELLED', 'REVERSED')
+      GROUP BY payment_method
+    `);
+
+    const methodLabels: Record<string, string> = {
+      CASH: 'نقدي (كاش)',
+      BANK_TRANSFER: 'تحويل بنكي',
+      CHECK: 'شيك مصرفي',
+      ELECTRONIC_WALLET: 'محفظة إلكترونية',
+      OTHER: 'طرق أخرى'
+    };
+
+    const collectionsByMethod = methodRows.map((m: any) => ({
+      method: m.payment_method,
+      methodLabel: methodLabels[m.payment_method] || m.payment_method,
+      count: Number(m.count),
+      totalAmount: Number(m.total_amount)
+    }));
+
+    // 9. Collections by account type
+    const [typeRows]: any = await pool.query(`
+      SELECT account_type,
+             COUNT(*) AS count,
+             COALESCE(SUM(amount_paid), 0) AS total_amount
+      FROM payments
+      WHERE status NOT IN ('CANCELLED', 'REVERSED')
+      GROUP BY account_type
+    `);
+
+    const typeLabels: Record<string, string> = {
+      RENT: 'إيجار عقاري',
+      ELECTRICITY: 'كهرباء وعدادات',
+      WATER: 'مياه ووايتات',
+      SERVICES: 'خدمات وصيانة',
+      UNIFIED: 'فاتورة موحدة',
+      OTHER: 'أخرى'
+    };
+
+    const collectionsByAccountType = typeRows.map((t: any) => ({
+      type: t.account_type,
+      typeLabel: typeLabels[t.account_type] || t.account_type,
+      count: Number(t.count),
+      totalAmount: Number(t.total_amount)
+    }));
+
+    res.json({
+      totalOutstandingReceivables: Number(dueRows[0]?.total_due || 0),
+      totalCollectedToday: Number(todayRows[0]?.collected_today || 0),
+      totalCollectedThisMonth: Number(monthRows[0]?.collected_month || 0),
+      receiptsCountToday: Number(todayRows[0]?.receipts_today || 0),
+      tenantsWithDueCount: Number(dueRows[0]?.debtor_count || 0),
+      centersCount: Number(centerCountRows[0]?.active_centers || 0),
+      activeCashBoxesCount: Number(boxCountRows[0]?.active_boxes || 0),
+      totalCurrentCashInBoxes: Number(boxCountRows[0]?.total_cash || 0),
+      cashBoxesSummary: boxesSummaryRows.map((b: any) => ({
+        id: b.id,
+        code: b.code,
+        name: b.name,
+        centerName: b.center_name || 'غير محدد',
+        cashierName: b.cashier_name || 'غير محدد',
+        currentBalance: Number(b.current_balance || 0),
+        currency: b.currency || 'YER',
+        status: b.status
+      })),
+      recentReceipts: recentReceiptsRows.map((r: any) => ({
+        id: r.id,
+        receiptNumber: r.receipt_number,
+        invoiceId: r.invoice_id,
+        invoiceNumber: r.invoice_number || '',
+        tenantId: r.tenant_id,
+        tenantName: r.tenant_name,
+        unitNumber: r.unit_number,
+        propertyName: r.property_name,
+        accountType: r.account_type,
+        amountPaid: Number(r.amount_paid),
+        paymentMethod: r.payment_method,
+        collectorId: r.collector_id,
+        collectorName: r.collector_name,
+        collectedAt: r.collected_at,
+        centerId: r.center_id,
+        centerName: r.center_name,
+        cashBoxId: r.cash_box_id,
+        cashBoxName: r.cash_box_name,
+        status: r.status || 'COMPLETED',
+        notes: r.notes,
+        qrCodeContent: r.qr_code_content
+      })),
+      collectionsByMethod,
+      collectionsByAccountType
+    });
+  } catch (err: any) {
+    console.error('Collections dashboard error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 12.2 Collection Centers CRUD
+router.get('/collections/centers', async (req: Request, res: Response) => {
+  try {
+    const pool = await getPool();
+    const { status, search } = req.query;
+
+    let query = `
+      SELECT c.*,
+             (SELECT COUNT(*) FROM cash_boxes b WHERE b.center_id = c.id) AS cash_box_count
+      FROM collection_centers c
+      WHERE 1=1
+    `;
+    const params: any[] = [];
+
+    if (status && status !== 'ALL') {
+      query += ' AND c.status = ?';
+      params.push(status);
+    }
+
+    if (search) {
+      query += ' AND (c.name LIKE ? OR c.code LIKE ? OR c.location LIKE ? OR c.manager_name LIKE ?)';
+      params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
+    }
+
+    query += ' ORDER BY c.created_at DESC';
+
+    const [rows]: any = await pool.query(query, params);
+    const centers = rows.map((r: any) => ({
+      id: r.id,
+      code: r.code,
+      name: r.name,
+      propertyId: r.property_id,
+      propertyName: r.property_name,
+      location: r.location,
+      managerName: r.manager_name,
+      phone: r.phone,
+      status: r.status,
+      notes: r.notes,
+      cashBoxCount: Number(r.cash_box_count || 0),
+      createdBy: r.created_by,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at
+    }));
+
+    res.json(centers);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/collections/centers', async (req: Request, res: Response) => {
+  try {
+    const pool = await getPool();
+    const { code, name, propertyId, propertyName, location, managerName, phone, status, notes } = req.body;
+
+    if (!name?.trim()) {
+      return res.status(400).json({ error: 'اسم مركز التحصيل إلزامي' });
+    }
+
+    const centerCode = code?.trim() || `CNT-${Date.now().toString().slice(-4)}`;
+
+    // Verify unique code
+    const [existing]: any = await pool.query('SELECT id FROM collection_centers WHERE code = ?', [centerCode]);
+    if (existing.length > 0) {
+      return res.status(400).json({ error: `كود مركز التحصيل (${centerCode}) مستخدم مسبقاً` });
+    }
+
+    const id = `cnt-${Date.now()}`;
+    await pool.query(`
+      INSERT INTO collection_centers
+      (id, code, name, property_id, property_name, location, manager_name, phone, status, notes, created_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
+      id, centerCode, name.trim(), propertyId || null, propertyName || null,
+      location || null, managerName || null, phone || null, status || 'ACTIVE',
+      notes || null, 'م. أحمد الوهاس'
+    ]);
+
+    // Audit log
+    await pool.query(`
+      INSERT INTO audit_logs (id, user_id, user_name, action, entity, entity_id, details)
+      VALUES (?, ?, ?, 'CREATE_COLLECTION_CENTER', 'COLLECTION_CENTER', ?, ?)
+    `, [`aud-${Date.now()}`, 'usr-1', 'م. أحمد الوهاس', id, `إنشاء مركز التحصيل: ${name.trim()} (${centerCode})`]);
+
+    res.status(201).json({ id, code: centerCode, name, message: 'تم إنشاء مركز التحصيل بنجاح' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.put('/collections/centers/:id', async (req: Request, res: Response) => {
+  try {
+    const pool = await getPool();
+    const { id } = req.params;
+    const { name, code, propertyId, propertyName, location, managerName, phone, status, notes } = req.body;
+
+    const [existing]: any = await pool.query('SELECT * FROM collection_centers WHERE id = ?', [id]);
+    if (!existing.length) {
+      return res.status(404).json({ error: 'مركز التحصيل غير موجود' });
+    }
+
+    if (code && code !== existing[0].code) {
+      const [dup]: any = await pool.query('SELECT id FROM collection_centers WHERE code = ? AND id != ?', [code, id]);
+      if (dup.length > 0) {
+        return res.status(400).json({ error: `كود مركز التحصيل (${code}) مستخدم مسبقاً` });
+      }
+    }
+
+    await pool.query(`
+      UPDATE collection_centers
+      SET name = ?, code = ?, property_id = ?, property_name = ?, location = ?,
+          manager_name = ?, phone = ?, status = ?, notes = ?
+      WHERE id = ?
+    `, [
+      name || existing[0].name,
+      code || existing[0].code,
+      propertyId !== undefined ? propertyId : existing[0].property_id,
+      propertyName !== undefined ? propertyName : existing[0].property_name,
+      location !== undefined ? location : existing[0].location,
+      managerName !== undefined ? managerName : existing[0].manager_name,
+      phone !== undefined ? phone : existing[0].phone,
+      status || existing[0].status,
+      notes !== undefined ? notes : existing[0].notes,
+      id
+    ]);
+
+    // Also update center_name on linked cash boxes if name changed
+    if (name && name !== existing[0].name) {
+      await pool.query('UPDATE cash_boxes SET center_name = ? WHERE center_id = ?', [name, id]);
+    }
+
+    res.json({ success: true, message: 'تم تحديث بيانات مركز التحصيل بنجاح' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.patch('/collections/centers/:id/status', async (req: Request, res: Response) => {
+  try {
+    const pool = await getPool();
+    const { id } = req.params;
+    const { status } = req.body;
+
+    if (!['ACTIVE', 'INACTIVE'].includes(status)) {
+      return res.status(400).json({ error: 'حالة غير صالحة' });
+    }
+
+    await pool.query('UPDATE collection_centers SET status = ? WHERE id = ?', [status, id]);
+    res.json({ success: true, status });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 12.3 Cash Boxes CRUD
+router.get('/collections/cash-boxes', async (req: Request, res: Response) => {
+  try {
+    const pool = await getPool();
+    const { centerId, status } = req.query;
+
+    let query = `
+      SELECT b.*,
+             (SELECT COALESCE(SUM(amount_paid), 0) 
+              FROM payments p 
+              WHERE p.cash_box_id = b.id AND DATE(p.collected_at) = CURDATE() AND p.status NOT IN ('CANCELLED', 'REVERSED')) AS today_collections
+      FROM cash_boxes b
+      WHERE 1=1
+    `;
+    const params: any[] = [];
+
+    if (centerId && centerId !== 'ALL') {
+      query += ' AND b.center_id = ?';
+      params.push(centerId);
+    }
+
+    if (status && status !== 'ALL') {
+      query += ' AND b.status = ?';
+      params.push(status);
+    }
+
+    query += ' ORDER BY b.created_at ASC';
+
+    const [rows]: any = await pool.query(query, params);
+    const boxes = rows.map((r: any) => ({
+      id: r.id,
+      code: r.code,
+      name: r.name,
+      centerId: r.center_id,
+      centerName: r.center_name,
+      cashierId: r.cashier_id,
+      cashierName: r.cashier_name,
+      currency: r.currency || 'YER',
+      openingBalance: Number(r.opening_balance || 0),
+      currentBalance: Number(r.current_balance || 0),
+      todayCollections: Number(r.today_collections || 0),
+      status: r.status,
+      notes: r.notes,
+      createdBy: r.created_by,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at
+    }));
+
+    res.json(boxes);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/collections/cash-boxes', async (req: Request, res: Response) => {
+  try {
+    const pool = await getPool();
+    const { code, name, centerId, centerName, cashierId, cashierName, currency, openingBalance, notes } = req.body;
+
+    if (!name?.trim()) {
+      return res.status(400).json({ error: 'اسم الصندوق الخزني إلزامي' });
+    }
+    if (!centerId) {
+      return res.status(400).json({ error: 'يرجى ربط الصندوق بمركز تحصيل معتمد' });
+    }
+
+    const boxCode = code?.trim() || `BOX-${Date.now().toString().slice(-4)}`;
+
+    const [existing]: any = await pool.query('SELECT id FROM cash_boxes WHERE code = ?', [boxCode]);
+    if (existing.length > 0) {
+      return res.status(400).json({ error: `كود الصندوق (${boxCode}) مستخدم مسبقاً` });
+    }
+
+    // Resolve center name if missing
+    let resolvedCenterName = centerName;
+    if (!resolvedCenterName) {
+      const [cRows]: any = await pool.query('SELECT name FROM collection_centers WHERE id = ?', [centerId]);
+      if (cRows.length) resolvedCenterName = cRows[0].name;
+    }
+
+    const opBal = Number(openingBalance || 0);
+    const id = `box-${Date.now()}`;
+
+    await pool.query(`
+      INSERT INTO cash_boxes
+      (id, code, name, center_id, center_name, cashier_id, cashier_name, currency, opening_balance, current_balance, status, notes, created_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?)
+    `, [
+      id, boxCode, name.trim(), centerId, resolvedCenterName || 'المركز الرئيسي',
+      cashierId || 'usr-1', cashierName || 'م. أحمد الوهاس', currency || 'YER',
+      opBal, opBal, notes || null, 'م. أحمد الوهاس'
+    ]);
+
+    // Audit log
+    await pool.query(`
+      INSERT INTO audit_logs (id, user_id, user_name, action, entity, entity_id, details)
+      VALUES (?, ?, ?, 'CREATE_CASH_BOX', 'CASH_BOX', ?, ?)
+    `, [`aud-${Date.now()}`, 'usr-1', 'م. أحمد الوهاس', id, `إنشاء صندوق خزني: ${name.trim()} برصيد افتتاحي ${opBal}`]);
+
+    res.status(201).json({ id, code: boxCode, name, message: 'تم إنشاء الصندوق بنجاح' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.put('/collections/cash-boxes/:id', async (req: Request, res: Response) => {
+  try {
+    const pool = await getPool();
+    const { id } = req.params;
+    const { name, code, centerId, centerName, cashierId, cashierName, currency, status, notes } = req.body;
+
+    const [existing]: any = await pool.query('SELECT * FROM cash_boxes WHERE id = ?', [id]);
+    if (!existing.length) {
+      return res.status(404).json({ error: 'الصندوق الخزني غير موجود' });
+    }
+
+    if (code && code !== existing[0].code) {
+      const [dup]: any = await pool.query('SELECT id FROM cash_boxes WHERE code = ? AND id != ?', [code, id]);
+      if (dup.length > 0) {
+        return res.status(400).json({ error: `كود الصندوق (${code}) مستخدم مسبقاً` });
+      }
+    }
+
+    let resolvedCenterName = centerName;
+    if (centerId && !resolvedCenterName) {
+      const [cRows]: any = await pool.query('SELECT name FROM collection_centers WHERE id = ?', [centerId]);
+      if (cRows.length) resolvedCenterName = cRows[0].name;
+    }
+
+    await pool.query(`
+      UPDATE cash_boxes
+      SET name = ?, code = ?, center_id = ?, center_name = ?,
+          cashier_id = ?, cashier_name = ?, currency = ?, status = ?, notes = ?
+      WHERE id = ?
+    `, [
+      name || existing[0].name,
+      code || existing[0].code,
+      centerId || existing[0].center_id,
+      resolvedCenterName || existing[0].center_name,
+      cashierId !== undefined ? cashierId : existing[0].cashier_id,
+      cashierName !== undefined ? cashierName : existing[0].cashier_name,
+      currency || existing[0].currency,
+      status || existing[0].status,
+      notes !== undefined ? notes : existing[0].notes,
+      id
+    ]);
+
+    res.json({ success: true, message: 'تم تحديث بيانات الصندوق بنجاح' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.patch('/collections/cash-boxes/:id/status', async (req: Request, res: Response) => {
+  try {
+    const pool = await getPool();
+    const { id } = req.params;
+    const { status } = req.body;
+
+    if (!['ACTIVE', 'INACTIVE', 'CLOSED'].includes(status)) {
+      return res.status(400).json({ error: 'حالة غير صالحة' });
+    }
+
+    await pool.query('UPDATE cash_boxes SET status = ? WHERE id = ?', [status, id]);
+    res.json({ success: true, status });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 12.4 Tenant Outstanding Receivables
+router.get('/collections/receivables', async (req: Request, res: Response) => {
+  try {
+    const pool = await getPool();
+    const { tenantId, propertyId, accountType, status, search } = req.query;
+
+    let query = `
+      SELECT i.*, 
+             t.phone AS tenant_phone,
+             t.tenant_code
+      FROM invoices i
+      LEFT JOIN tenants t ON i.tenant_id = t.id
+      WHERE i.remaining_amount > 0 AND i.status NOT IN ('CANCELLED', 'PAID')
+    `;
+    const params: any[] = [];
+
+    if (tenantId && tenantId !== 'ALL') {
+      query += ' AND i.tenant_id = ?';
+      params.push(tenantId);
+    }
+
+    if (propertyId && propertyId !== 'ALL') {
+      query += ' AND i.property_id = ?';
+      params.push(propertyId);
+    }
+
+    if (accountType && accountType !== 'ALL') {
+      query += ' AND i.account_type = ?';
+      params.push(accountType);
+    }
+
+    if (status && status !== 'ALL') {
+      query += ' AND i.status = ?';
+      params.push(status);
+    }
+
+    if (search) {
+      query += ' AND (i.invoice_number LIKE ? OR i.tenant_name LIKE ? OR i.unit_number LIKE ? OR i.property_name LIKE ?)';
+      params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
+    }
+
+    query += ' ORDER BY i.due_date ASC, i.created_at DESC';
+
+    const [rows]: any = await pool.query(query, params);
+    const receivables = rows.map((r: any) => ({
+      id: r.id,
+      invoiceNumber: r.invoice_number,
+      tenantId: r.tenant_id,
+      tenantCode: r.tenant_code || '',
+      tenantName: r.tenant_name,
+      tenantPhone: r.tenant_phone || '',
+      propertyId: r.property_id,
+      propertyName: r.property_name,
+      unitId: r.unit_id,
+      unitNumber: r.unit_number,
+      contractId: r.contract_id,
+      contractNumber: r.contract_id ? `CNT-${r.contract_id.slice(-6)}` : '',
+      accountType: r.account_type,
+      dueDate: r.due_date,
+      issueDate: r.issue_date,
+      totalAmount: Number(r.total_amount),
+      paidAmount: Number(r.paid_amount || 0),
+      remainingAmount: Number(r.remaining_amount),
+      status: r.status,
+      period: r.period_month || r.period_year ? `${r.period_month || ''} ${r.period_year || ''}`.trim() : '',
+      notes: r.notes
+    }));
+
+    res.json(receivables);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 12.5 Filtered Receipts List
+router.get('/collections/receipts', async (req: Request, res: Response) => {
+  try {
+    const pool = await getPool();
+    const { propertyId, tenantId, centerId, cashBoxId, paymentMethod, status, startDate, endDate, search } = req.query;
+
+    let query = `
+      SELECT p.*, 
+             i.invoice_number, 
+             i.due_date,
+             t.phone AS tenant_phone
+      FROM payments p
+      LEFT JOIN invoices i ON p.invoice_id = i.id
+      LEFT JOIN tenants t ON p.tenant_id = t.id
+      WHERE 1=1
+    `;
+    const params: any[] = [];
+
+    if (propertyId && propertyId !== 'ALL') {
+      query += ' AND (p.property_id = ? OR i.property_id = ?)';
+      params.push(propertyId, propertyId);
+    }
+
+    if (tenantId && tenantId !== 'ALL') {
+      query += ' AND p.tenant_id = ?';
+      params.push(tenantId);
+    }
+
+    if (centerId && centerId !== 'ALL') {
+      query += ' AND p.center_id = ?';
+      params.push(centerId);
+    }
+
+    if (cashBoxId && cashBoxId !== 'ALL') {
+      query += ' AND p.cash_box_id = ?';
+      params.push(cashBoxId);
+    }
+
+    if (paymentMethod && paymentMethod !== 'ALL') {
+      query += ' AND p.payment_method = ?';
+      params.push(paymentMethod);
+    }
+
+    if (status && status !== 'ALL') {
+      query += ' AND p.status = ?';
+      params.push(status);
+    }
+
+    if (startDate) {
+      query += ' AND DATE(p.collected_at) >= ?';
+      params.push(startDate);
+    }
+
+    if (endDate) {
+      query += ' AND DATE(p.collected_at) <= ?';
+      params.push(endDate);
+    }
+
+    if (search) {
+      query += ' AND (p.receipt_number LIKE ? OR p.tenant_name LIKE ? OR i.invoice_number LIKE ? OR p.unit_number LIKE ?)';
+      params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
+    }
+
+    query += ' ORDER BY p.collected_at DESC LIMIT 500';
+
+    const [rows]: any = await pool.query(query, params);
+    const receipts = rows.map((r: any) => ({
+      id: r.id,
+      receiptNumber: r.receipt_number,
+      invoiceId: r.invoice_id,
+      invoiceNumber: r.invoice_number || '',
+      tenantId: r.tenant_id,
+      tenantName: r.tenant_name,
+      tenantPhone: r.tenant_phone || '',
+      unitId: r.unit_id,
+      unitNumber: r.unit_number,
+      propertyId: r.property_id,
+      propertyName: r.property_name,
+      contractId: r.contract_id,
+      accountType: r.account_type,
+      amountPaid: Number(r.amount_paid),
+      paymentMethod: r.payment_method,
+      collectorId: r.collector_id,
+      collectorName: r.collector_name,
+      collectedAt: r.collected_at,
+      centerId: r.center_id,
+      centerName: r.center_name,
+      cashBoxId: r.cash_box_id,
+      cashBoxName: r.cash_box_name,
+      status: r.status || 'COMPLETED',
+      cancelledAt: r.cancelled_at,
+      cancelledBy: r.cancelled_by,
+      cancellationReason: r.cancellation_reason,
+      reversedAt: r.reversed_at,
+      reversedBy: r.reversed_by,
+      reversalReason: r.reversal_reason,
+      reversalReceiptId: r.reversal_receipt_id,
+      checkNumber: r.check_number,
+      bankName: r.bank_name,
+      transferReference: r.transfer_reference,
+      notes: r.notes,
+      qrCodeContent: r.qr_code_content,
+      createdAt: r.created_at
+    }));
+
+    res.json(receipts);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 12.6 Single Receipt Details
+router.get('/collections/receipts/:id', async (req: Request, res: Response) => {
+  try {
+    const pool = await getPool();
+    const { id } = req.params;
+
+    const [rows]: any = await pool.query(`
+      SELECT p.*, 
+             i.invoice_number, 
+             i.total_amount AS invoice_total,
+             i.paid_amount AS invoice_paid,
+             i.remaining_amount AS invoice_remaining,
+             i.due_date,
+             t.phone AS tenant_phone,
+             t.tenant_code
+      FROM payments p
+      LEFT JOIN invoices i ON p.invoice_id = i.id
+      LEFT JOIN tenants t ON p.tenant_id = t.id
+      WHERE p.id = ? OR p.receipt_number = ?
+    `, [id, id]);
+
+    if (!rows.length) {
+      return res.status(404).json({ error: 'سند القبض غير موجود' });
+    }
+
+    const r = rows[0];
+    res.json({
+      id: r.id,
+      receiptNumber: r.receipt_number,
+      invoiceId: r.invoice_id,
+      invoiceNumber: r.invoice_number,
+      invoiceTotal: Number(r.invoice_total || 0),
+      invoicePaid: Number(r.invoice_paid || 0),
+      invoiceRemaining: Number(r.invoice_remaining || 0),
+      dueDate: r.due_date,
+      tenantId: r.tenant_id,
+      tenantCode: r.tenant_code,
+      tenantName: r.tenant_name,
+      tenantPhone: r.tenant_phone,
+      unitNumber: r.unit_number,
+      propertyName: r.property_name,
+      accountType: r.account_type,
+      amountPaid: Number(r.amount_paid),
+      paymentMethod: r.payment_method,
+      collectorId: r.collector_id,
+      collectorName: r.collector_name,
+      collectedAt: r.collected_at,
+      centerId: r.center_id,
+      centerName: r.center_name,
+      cashBoxId: r.cash_box_id,
+      cashBoxName: r.cash_box_name,
+      status: r.status || 'COMPLETED',
+      checkNumber: r.check_number,
+      bankName: r.bank_name,
+      transferReference: r.transfer_reference,
+      notes: r.notes,
+      qrCodeContent: r.qr_code_content
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 12.7 Create Receipt with Real Atomic Financial Posting
+router.post('/collections/receipts', async (req: Request, res: Response) => {
+  try {
+    const {
+      invoiceId,
+      amountPaid,
+      paymentMethod = 'CASH',
+      centerId,
+      centerName,
+      cashBoxId,
+      cashBoxName,
+      collectorId,
+      collectorName,
+      checkNumber,
+      bankName,
+      transferReference,
+      notes
+    } = req.body;
+
+    const amount = Number(amountPaid);
+    if (!invoiceId || isNaN(amount) || amount <= 0) {
+      return res.status(400).json({ error: 'يرجى تحديد الفاتورة ومبلغ التحصيل بشكل صحيح (أكبر من صفر)' });
+    }
+
+    const result = await executeTransaction(async (conn) => {
+      // 1. Lock invoice for update
+      const [invRows]: any = await conn.query('SELECT * FROM invoices WHERE id = ? FOR UPDATE', [invoiceId]);
+      if (!invRows.length) throw new Error('الفاتورة المطلوبة غير موجودة في النظام');
+      const invoice = invRows[0];
+
+      if (invoice.status === 'PAID') {
+        throw new Error('الفاتورة مسددة بالكامل مسبقاً، ولا يمكن تحصيل مبالغ إضافية عليها');
+      }
+      if (invoice.status === 'CANCELLED') {
+        throw new Error('الفاتورة ملغاة ولا يمكن إصدار سند قبض عليها');
+      }
+
+      const remainingBefore = Number(invoice.remaining_amount);
+      if (amount > remainingBefore) {
+        throw new Error(`مبلغ التحصيل (${amount} ر.ي) أكبر من المبلغ المستحق على الفاتورة (${remainingBefore} ر.ي). الحماية من السداد الزائد مفعلة.`);
+      }
+
+      // 2. Validate Cash Box if payment method is CASH
+      let box: any = null;
+      if (paymentMethod === 'CASH') {
+        if (!cashBoxId) {
+          // Find first active cash box if not provided
+          const [defBoxes]: any = await conn.query("SELECT * FROM cash_boxes WHERE status = 'ACTIVE' LIMIT 1 FOR UPDATE");
+          if (!defBoxes.length) throw new Error('لا يوجد صندوق نقدي نشط لاستلام المبالغ النقدية');
+          box = defBoxes[0];
+        } else {
+          const [boxes]: any = await conn.query('SELECT * FROM cash_boxes WHERE id = ? FOR UPDATE', [cashBoxId]);
+          if (!boxes.length) throw new Error('الصندوق الخزني المحدد غير موجود');
+          box = boxes[0];
+          if (box.status !== 'ACTIVE') {
+            throw new Error(`الصندوق الخزني (${box.name}) غير نشط حالياً ولا يمكن استلام مبالغ فيه`);
+          }
+        }
+      }
+
+      // 3. Compute new amounts & status
+      const newPaidAmount = Number(invoice.paid_amount || 0) + amount;
+      const newRemaining = Math.max(0, remainingBefore - amount);
+      const newStatus = newRemaining === 0 ? 'PAID' : 'PARTIALLY_PAID';
+
+      // 4. Update Invoice
+      await conn.query(`
+        UPDATE invoices 
+        SET paid_amount = ?, remaining_amount = ?, status = ?
+        WHERE id = ?
+      `, [newPaidAmount, newRemaining, newStatus, invoice.id]);
+
+      // 5. Update Tenant Current & Specific Balance
+      await conn.query(`
+        UPDATE tenants 
+        SET current_balance = GREATEST(0, current_balance - ?)
+        WHERE id = ?
+      `, [amount, invoice.tenant_id]);
+
+      if (invoice.account_type === 'RENT') {
+        await conn.query('UPDATE tenants SET rent_balance = GREATEST(0, rent_balance - ?) WHERE id = ?', [amount, invoice.tenant_id]);
+      } else if (invoice.account_type === 'ELECTRICITY') {
+        await conn.query('UPDATE tenants SET electricity_balance = GREATEST(0, electricity_balance - ?) WHERE id = ?', [amount, invoice.tenant_id]);
+      } else if (invoice.account_type === 'WATER') {
+        await conn.query('UPDATE tenants SET water_balance = GREATEST(0, water_balance - ?) WHERE id = ?', [amount, invoice.tenant_id]);
+      }
+
+      // 6. Update Property Total Outstanding
+      if (invoice.property_id) {
+        await conn.query(`
+          UPDATE properties 
+          SET total_outstanding_rent = GREATEST(0, total_outstanding_rent - ?)
+          WHERE id = ?
+        `, [amount, invoice.property_id]);
+      }
+
+      // 7. Update Cash Box Balance if payment method is CASH
+      if (paymentMethod === 'CASH' && box) {
+        await conn.query(`
+          UPDATE cash_boxes
+          SET current_balance = current_balance + ?
+          WHERE id = ?
+        `, [amount, box.id]);
+      }
+
+      // 8. Generate safe, unique receipt number: RCPT-YYYYMMDD-XXXX
+      const receiptId = `pay-${Date.now()}`;
+      const now = new Date();
+      const datePart = now.toISOString().slice(0, 10).replace(/-/g, '');
+      const randomSuffix = Math.floor(1000 + Math.random() * 9000);
+      const receiptNumber = `RCPT-${datePart}-${randomSuffix}`;
+
+      const activeCenterId = centerId || box?.center_id || 'cnt-01';
+      const activeCenterName = centerName || box?.center_name || 'مركز التحصيل الرئيسي';
+      const activeBoxId = box ? box.id : null;
+      const activeBoxName = box ? box.name : null;
+
+      const qrCodeContent = `SMART-ERP-RECEIPT|NUM:${receiptNumber}|AMT:${amount}|TENANT:${invoice.tenant_name}|DATE:${now.toISOString().slice(0, 10)}`;
+
+      // 9. Insert into payments table
+      await conn.query(`
+        INSERT INTO payments 
+        (id, receipt_number, invoice_id, tenant_id, tenant_name, unit_number, property_name, account_type, 
+         amount_paid, payment_method, collector_id, collector_name, collected_at, 
+         center_id, center_name, cash_box_id, cash_box_name, property_id, unit_id, contract_id,
+         status, check_number, bank_name, transfer_reference, notes, qr_code_content)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, ?, ?, ?, ?, ?, ?, 'COMPLETED', ?, ?, ?, ?, ?)
+      `, [
+        receiptId, receiptNumber, invoice.id, invoice.tenant_id, invoice.tenant_name,
+        invoice.unit_number, invoice.property_name, invoice.account_type,
+        amount, paymentMethod, collectorId || 'usr-1', collectorName || 'م. أحمد الوهاس',
+        activeCenterId, activeCenterName, activeBoxId, activeBoxName,
+        invoice.property_id, invoice.unit_id, invoice.contract_id,
+        checkNumber || null, bankName || null, transferReference || null,
+        notes || null, qrCodeContent
+      ]);
+
+      // 10. Insert Tenant Financial Ledger Entry
+      const ledgerId = `ledg-${receiptId}`;
+      const accountArabic = invoice.account_type === 'RENT' ? 'إيجار' :
+                            invoice.account_type === 'ELECTRICITY' ? 'كهرباء' :
+                            invoice.account_type === 'WATER' ? 'مياه' : 'خدمات';
+
+      await conn.query(`
+        INSERT INTO tenant_ledger 
+        (id, tenant_id, date, reference, account_type, debit, credit, balance_after, description, user_id)
+        VALUES (?, ?, CURDATE(), ?, ?, 0.00, ?, ?, ?, ?)
+      `, [
+        ledgerId, invoice.tenant_id, receiptNumber, invoice.account_type,
+        amount, newRemaining,
+        `تحصيل ${accountArabic} بموجب سند قبض رقم ${receiptNumber} للفاتورة ${invoice.invoice_number}`,
+        collectorId || 'usr-1'
+      ]);
+
+      // 11. Create Audit Log
+      await conn.query(`
+        INSERT INTO audit_logs 
+        (id, user_id, user_name, action, entity, entity_id, details)
+        VALUES (?, ?, ?, 'COLLECT_PAYMENT', 'PAYMENT_RECEIPT', ?, ?)
+      `, [
+        `aud-${Date.now()}`, collectorId || 'usr-1', collectorName || 'م. أحمد الوهاس',
+        receiptId,
+        `تحصيل رسمي بمبلغ ${amount} ر.ي من المستأجر (${invoice.tenant_name}) بسند ${receiptNumber}`
+      ]);
+
+      return {
+        receipt: {
+          id: receiptId,
+          receiptNumber,
+          invoiceId: invoice.id,
+          invoiceNumber: invoice.invoice_number,
+          tenantId: invoice.tenant_id,
+          tenantName: invoice.tenant_name,
+          unitNumber: invoice.unit_number,
+          propertyName: invoice.property_name,
+          accountType: invoice.account_type,
+          amountPaid: amount,
+          paymentMethod,
+          centerId: activeCenterId,
+          centerName: activeCenterName,
+          cashBoxId: activeBoxId,
+          cashBoxName: activeBoxName,
+          collectorId: collectorId || 'usr-1',
+          collectorName: collectorName || 'م. أحمد الوهاس',
+          collectedAt: now.toISOString(),
+          status: 'COMPLETED',
+          remainingAmount: newRemaining,
+          notes,
+          qrCodeContent
+        },
+        updatedInvoice: {
+          id: invoice.id,
+          invoiceNumber: invoice.invoice_number,
+          paidAmount: newPaidAmount,
+          remainingAmount: newRemaining,
+          status: newStatus
+        }
+      };
+    });
+
+    res.status(201).json(result);
+  } catch (err: any) {
+    console.error('Create receipt error:', err.message);
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// 12.8 Cancel Receipt (إلغاء سند القبض مع عكس الأثر المالي)
+router.post('/collections/receipts/:id/cancel', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { cancellationReason, cancelledBy = 'م. أحمد الوهاس' } = req.body;
+
+    if (!cancellationReason?.trim()) {
+      return res.status(400).json({ error: 'سبب إلغاء سند القبض إلزامي للتدقيق المحاسبي' });
+    }
+
+    const result = await executeTransaction(async (conn) => {
+      // 1. Lock payment row
+      const [payRows]: any = await conn.query('SELECT * FROM payments WHERE id = ? FOR UPDATE', [id]);
+      if (!payRows.length) throw new Error('سند القبض غير موجود');
+      const pay = payRows[0];
+
+      if (pay.status === 'CANCELLED') {
+        throw new Error('سند القبض ملغى مسبقاً');
+      }
+      if (pay.status === 'REVERSED') {
+        throw new Error('سند القبض معكوس مسبقاً ولا يمكن إلغاؤه');
+      }
+
+      const amount = Number(pay.amount_paid);
+
+      // 2. Lock & Revert invoice
+      const [invRows]: any = await conn.query('SELECT * FROM invoices WHERE id = ? FOR UPDATE', [pay.invoice_id]);
+      if (invRows.length > 0) {
+        const inv = invRows[0];
+        const newPaid = Math.max(0, Number(inv.paid_amount) - amount);
+        const newRemaining = Number(inv.remaining_amount) + amount;
+        const newStatus = newPaid === 0 ? 'UNPAID' : 'PARTIALLY_PAID';
+
+        await conn.query(`
+          UPDATE invoices 
+          SET paid_amount = ?, remaining_amount = ?, status = ?
+          WHERE id = ?
+        `, [newPaid, newRemaining, newStatus, inv.id]);
+      }
+
+      // 3. Revert Tenant Balance
+      await conn.query(`
+        UPDATE tenants 
+        SET current_balance = current_balance + ?
+        WHERE id = ?
+      `, [amount, pay.tenant_id]);
+
+      if (pay.account_type === 'RENT') {
+        await conn.query('UPDATE tenants SET rent_balance = rent_balance + ? WHERE id = ?', [amount, pay.tenant_id]);
+      } else if (pay.account_type === 'ELECTRICITY') {
+        await conn.query('UPDATE tenants SET electricity_balance = electricity_balance + ? WHERE id = ?', [amount, pay.tenant_id]);
+      } else if (pay.account_type === 'WATER') {
+        await conn.query('UPDATE tenants SET water_balance = water_balance + ? WHERE id = ?', [amount, pay.tenant_id]);
+      }
+
+      // 4. Revert Property Outstanding Rent
+      if (pay.property_id) {
+        await conn.query('UPDATE properties SET total_outstanding_rent = total_outstanding_rent + ? WHERE id = ?', [amount, pay.property_id]);
+      }
+
+      // 5. Revert Cash Box if payment was CASH
+      if (pay.payment_method === 'CASH' && pay.cash_box_id) {
+        await conn.query(`
+          UPDATE cash_boxes 
+          SET current_balance = GREATEST(0, current_balance - ?)
+          WHERE id = ?
+        `, [amount, pay.cash_box_id]);
+      }
+
+      // 6. Insert Reversal Entry in Tenant Ledger
+      const revLedgerId = `ledg-rev-${Date.now()}`;
+      await conn.query(`
+        INSERT INTO tenant_ledger 
+        (id, tenant_id, date, reference, account_type, debit, credit, balance_after, description, user_id)
+        VALUES (?, ?, CURDATE(), ?, ?, ?, 0.00, 
+                (SELECT current_balance FROM tenants WHERE id = ?), ?, ?)
+      `, [
+        revLedgerId, pay.tenant_id, `REV-${pay.receipt_number}`, pay.account_type,
+        amount, pay.tenant_id,
+        `إلغاء سند القبض ${pay.receipt_number} - سبب: ${cancellationReason.trim()}`,
+        'usr-1'
+      ]);
+
+      // 7. Update Payment status
+      await conn.query(`
+        UPDATE payments
+        SET status = 'CANCELLED',
+            cancelled_at = NOW(),
+            cancelled_by = ?,
+            cancellation_reason = ?
+        WHERE id = ?
+      `, [cancelledBy, cancellationReason.trim(), pay.id]);
+
+      // 8. Audit Log
+      await conn.query(`
+        INSERT INTO audit_logs (id, user_id, user_name, action, entity, entity_id, details)
+        VALUES (?, ?, ?, 'CANCEL_PAYMENT', 'PAYMENT_RECEIPT', ?, ?)
+      `, [
+        `aud-${Date.now()}`, 'usr-1', cancelledBy, pay.id,
+        `إلغاء سند قبض رقم ${pay.receipt_number} بمبلغ ${amount} ر.ي للمستأجر ${pay.tenant_name}. السبب: ${cancellationReason.trim()}`
+      ]);
+
+      return { success: true, message: 'تم إلغاء سند القبض وعكس الأثر المالي بنجاح' };
+    });
+
+    res.json(result);
+  } catch (err: any) {
+    console.error('Cancel receipt error:', err.message);
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// 12.9 Reverse Receipt (عكس سند القبض الترحيلي)
+router.post('/collections/receipts/:id/reverse', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { reversalReason, reversedBy = 'م. أحمد الوهاس' } = req.body;
+
+    if (!reversalReason?.trim()) {
+      return res.status(400).json({ error: 'سبب عكس ترحيل سند القبض إلزامي للتدقيق المالي' });
+    }
+
+    const result = await executeTransaction(async (conn) => {
+      // 1. Lock payment row
+      const [payRows]: any = await conn.query('SELECT * FROM payments WHERE id = ? FOR UPDATE', [id]);
+      if (!payRows.length) throw new Error('سند القبض غير موجود');
+      const pay = payRows[0];
+
+      if (pay.status === 'REVERSED') {
+        throw new Error('سند القبض معكوس مسبقاً، منع التكرار مفعل');
+      }
+      if (pay.status === 'CANCELLED') {
+        throw new Error('سند القبض ملغى مسبقاً ولا يمكن عكسه');
+      }
+
+      const amount = Number(pay.amount_paid);
+
+      // 2. Lock & Revert invoice
+      const [invRows]: any = await conn.query('SELECT * FROM invoices WHERE id = ? FOR UPDATE', [pay.invoice_id]);
+      if (invRows.length > 0) {
+        const inv = invRows[0];
+        const newPaid = Math.max(0, Number(inv.paid_amount) - amount);
+        const newRemaining = Number(inv.remaining_amount) + amount;
+        const newStatus = newPaid === 0 ? 'UNPAID' : 'PARTIALLY_PAID';
+
+        await conn.query(`
+          UPDATE invoices 
+          SET paid_amount = ?, remaining_amount = ?, status = ?
+          WHERE id = ?
+        `, [newPaid, newRemaining, newStatus, inv.id]);
+      }
+
+      // 3. Revert Tenant Balance
+      await conn.query(`
+        UPDATE tenants 
+        SET current_balance = current_balance + ?
+        WHERE id = ?
+      `, [amount, pay.tenant_id]);
+
+      if (pay.account_type === 'RENT') {
+        await conn.query('UPDATE tenants SET rent_balance = rent_balance + ? WHERE id = ?', [amount, pay.tenant_id]);
+      } else if (pay.account_type === 'ELECTRICITY') {
+        await conn.query('UPDATE tenants SET electricity_balance = electricity_balance + ? WHERE id = ?', [amount, pay.tenant_id]);
+      } else if (pay.account_type === 'WATER') {
+        await conn.query('UPDATE tenants SET water_balance = water_balance + ? WHERE id = ?', [amount, pay.tenant_id]);
+      }
+
+      // 4. Revert Property Outstanding Rent
+      if (pay.property_id) {
+        await conn.query('UPDATE properties SET total_outstanding_rent = total_outstanding_rent + ? WHERE id = ?', [amount, pay.property_id]);
+      }
+
+      // 5. Revert Cash Box if payment was CASH
+      if (pay.payment_method === 'CASH' && pay.cash_box_id) {
+        await conn.query(`
+          UPDATE cash_boxes 
+          SET current_balance = GREATEST(0, current_balance - ?)
+          WHERE id = ?
+        `, [amount, pay.cash_box_id]);
+      }
+
+      // 6. Generate Reversal Ledger Transaction
+      const revLedgerId = `ledg-rev-${Date.now()}`;
+      await conn.query(`
+        INSERT INTO tenant_ledger 
+        (id, tenant_id, date, reference, account_type, debit, credit, balance_after, description, user_id)
+        VALUES (?, ?, CURDATE(), ?, ?, ?, 0.00, 
+                (SELECT current_balance FROM tenants WHERE id = ?), ?, ?)
+      `, [
+        revLedgerId, pay.tenant_id, `REV-${pay.receipt_number}`, pay.account_type,
+        amount, pay.tenant_id,
+        `عكس قيد ترحيل سند قبض ${pay.receipt_number} - سبب: ${reversalReason.trim()}`,
+        'usr-1'
+      ]);
+
+      // 7. Update Payment status to REVERSED
+      await conn.query(`
+        UPDATE payments
+        SET status = 'REVERSED',
+            reversed_at = NOW(),
+            reversed_by = ?,
+            reversal_reason = ?,
+            reversal_receipt_id = ?
+        WHERE id = ?
+      `, [reversedBy, reversalReason.trim(), revLedgerId, pay.id]);
+
+      // 8. Audit Log
+      await conn.query(`
+        INSERT INTO audit_logs (id, user_id, user_name, action, entity, entity_id, details)
+        VALUES (?, ?, ?, 'REVERSE_PAYMENT', 'PAYMENT_RECEIPT', ?, ?)
+      `, [
+        `aud-${Date.now()}`, 'usr-1', reversedBy, pay.id,
+        `عكس ترحيل سند قبض رقم ${pay.receipt_number} بمبلغ ${amount} ر.ي للمستأجر ${pay.tenant_name}. السبب: ${reversalReason.trim()}`
+      ]);
+
+      return { success: true, message: 'تم عكس ترحيل سند القبض وإلغاء الأثر المالي دفترياً بنجاح' };
+    });
+
+    res.json(result);
+  } catch (err: any) {
+    console.error('Reverse receipt error:', err.message);
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// 12.10 Cash Box Daily Closings
+router.get('/collections/closings', async (req: Request, res: Response) => {
+  try {
+    const pool = await getPool();
+    const { cashBoxId, startDate, endDate } = req.query;
+
+    let query = 'SELECT * FROM cash_box_closings WHERE 1=1';
+    const params: any[] = [];
+
+    if (cashBoxId && cashBoxId !== 'ALL') {
+      query += ' AND cash_box_id = ?';
+      params.push(cashBoxId);
+    }
+    if (startDate) {
+      query += ' AND closing_date >= ?';
+      params.push(startDate);
+    }
+    if (endDate) {
+      query += ' AND closing_date <= ?';
+      params.push(endDate);
+    }
+
+    query += ' ORDER BY closing_date DESC, closed_at DESC LIMIT 200';
+
+    const [rows]: any = await pool.query(query, params);
+    const closings = rows.map((r: any) => ({
+      id: r.id,
+      closingNumber: r.closing_number,
+      cashBoxId: r.cash_box_id,
+      cashBoxName: r.cash_box_name,
+      centerId: r.center_id,
+      centerName: r.center_name,
+      cashierId: r.cashier_id,
+      cashierName: r.cashier_name,
+      closingDate: r.closing_date,
+      openingBalance: Number(r.opening_balance || 0),
+      totalCollected: Number(r.total_collected || 0),
+      expectedCash: Number(r.expected_cash || 0),
+      actualCash: Number(r.actual_cash || 0),
+      difference: Number(r.difference || 0),
+      status: r.status,
+      notes: r.notes,
+      closedAt: r.closed_at
+    }));
+
+    res.json(closings);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/collections/closings', async (req: Request, res: Response) => {
+  try {
+    const { cashBoxId, closingDate, actualCash, notes, cashierName = 'م. أحمد الوهاس' } = req.body;
+
+    if (!cashBoxId) {
+      return res.status(400).json({ error: 'يرجى اختيار الصندوق الخزني المراد إغلاقه' });
+    }
+
+    const actual = Number(actualCash);
+    if (isNaN(actual) || actual < 0) {
+      return res.status(400).json({ error: 'يرجى إدخال مبلغ النقدية الفعلي المحصي بشكل صحيح' });
+    }
+
+    const dateStr = closingDate || new Date().toISOString().slice(0, 10);
+
+    const result = await executeTransaction(async (conn) => {
+      // 1. Lock cash box
+      const [boxRows]: any = await conn.query('SELECT * FROM cash_boxes WHERE id = ? FOR UPDATE', [cashBoxId]);
+      if (!boxRows.length) throw new Error('الصندوق الخزني غير موجود');
+      const box = boxRows[0];
+
+      // 2. Calculate collections on that date
+      const [colRows]: any = await conn.query(`
+        SELECT COALESCE(SUM(amount_paid), 0) AS total_collected
+        FROM payments
+        WHERE cash_box_id = ? AND DATE(collected_at) = ? AND payment_method = 'CASH'
+          AND status NOT IN ('CANCELLED', 'REVERSED')
+      `, [box.id, dateStr]);
+
+      const totalCollected = Number(colRows[0]?.total_collected || 0);
+      const openingBal = Number(box.opening_balance || 0);
+      const expectedCash = openingBal + totalCollected;
+      const difference = actual - expectedCash;
+
+      const closingId = `cls-${Date.now()}`;
+      const closingNumber = `CLS-${dateStr.replace(/-/g, '')}-${box.code}`;
+
+      // 3. Insert Closing record
+      await conn.query(`
+        INSERT INTO cash_box_closings
+        (id, closing_number, cash_box_id, cash_box_name, center_id, center_name, cashier_id, cashier_name,
+         closing_date, opening_balance, total_collected, expected_cash, actual_cash, difference, status, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'CLOSED', ?)
+      `, [
+        closingId, closingNumber, box.id, box.name, box.center_id, box.center_name,
+        box.cashier_id || 'usr-1', cashierName, dateStr, openingBal, totalCollected,
+        expectedCash, actual, difference, notes || null
+      ]);
+
+      // 4. Update Cash Box opening balance for next cycle to match actual cash
+      await conn.query(`
+        UPDATE cash_boxes
+        SET current_balance = ?, opening_balance = ?
+        WHERE id = ?
+      `, [actual, actual, box.id]);
+
+      // 5. Audit Log
+      await conn.query(`
+        INSERT INTO audit_logs (id, user_id, user_name, action, entity, entity_id, details)
+        VALUES (?, ?, ?, 'CLOSE_CASH_BOX', 'CASH_BOX_CLOSING', ?, ?)
+      `, [
+        `aud-${Date.now()}`, 'usr-1', cashierName, closingId,
+        `إغلاق الصندوق ${box.name} لتاريخ ${dateStr}: المتوقع ${expectedCash} ر.ي، الفعلي ${actual} ر.ي، الفارق ${difference} ر.ي`
+      ]);
+
+      return {
+        id: closingId,
+        closingNumber,
+        closingDate: dateStr,
+        cashBoxName: box.name,
+        openingBalance: openingBal,
+        totalCollected,
+        expectedCash,
+        actualCash: actual,
+        difference,
+        message: 'تم إغلاق الصندوق الخزني وتسجيل محضر التوريد بنجاح'
+      };
+    });
+
+    res.status(201).json(result);
+  } catch (err: any) {
+    console.error('Cash box closing error:', err.message);
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// 12.11 Multi-Dimensional Collection Reports
+router.get('/collections/reports', async (req: Request, res: Response) => {
+  try {
+    const pool = await getPool();
+    const {
+      reportType = 'daily', // 'daily', 'cashier', 'center', 'property', 'payment_method', 'tenant', 'receivables', 'cash_box', 'cancelled'
+      startDate,
+      endDate,
+      propertyId,
+      tenantId,
+      centerId,
+      cashBoxId,
+      paymentMethod
+    } = req.query;
+
+    let baseFilter = " WHERE 1=1";
+    const params: any[] = [];
+
+    if (startDate) {
+      baseFilter += " AND DATE(p.collected_at) >= ?";
+      params.push(startDate);
+    }
+    if (endDate) {
+      baseFilter += " AND DATE(p.collected_at) <= ?";
+      params.push(endDate);
+    }
+    if (propertyId && propertyId !== 'ALL') {
+      baseFilter += " AND (p.property_id = ? OR i.property_id = ?)";
+      params.push(propertyId, propertyId);
+    }
+    if (tenantId && tenantId !== 'ALL') {
+      baseFilter += " AND p.tenant_id = ?";
+      params.push(tenantId);
+    }
+    if (centerId && centerId !== 'ALL') {
+      baseFilter += " AND p.center_id = ?";
+      params.push(centerId);
+    }
+    if (cashBoxId && cashBoxId !== 'ALL') {
+      baseFilter += " AND p.cash_box_id = ?";
+      params.push(cashBoxId);
+    }
+    if (paymentMethod && paymentMethod !== 'ALL') {
+      baseFilter += " AND p.payment_method = ?";
+      params.push(paymentMethod);
+    }
+
+    let reportRows: any[] = [];
+    let summary: any = {};
+
+    if (reportType === 'daily') {
+      const [rows]: any = await pool.query(`
+        SELECT DATE(p.collected_at) AS date,
+               COUNT(*) AS receipt_count,
+               COALESCE(SUM(CASE WHEN p.status NOT IN ('CANCELLED', 'REVERSED') THEN p.amount_paid ELSE 0 END), 0) AS total_collected,
+               COALESCE(SUM(CASE WHEN p.payment_method = 'CASH' AND p.status NOT IN ('CANCELLED', 'REVERSED') THEN p.amount_paid ELSE 0 END), 0) AS cash_amount,
+               COALESCE(SUM(CASE WHEN p.payment_method != 'CASH' AND p.status NOT IN ('CANCELLED', 'REVERSED') THEN p.amount_paid ELSE 0 END), 0) AS non_cash_amount,
+               COALESCE(SUM(CASE WHEN p.status = 'CANCELLED' THEN p.amount_paid ELSE 0 END), 0) AS cancelled_amount,
+               COALESCE(SUM(CASE WHEN p.status = 'REVERSED' THEN p.amount_paid ELSE 0 END), 0) AS reversed_amount
+        FROM payments p
+        LEFT JOIN invoices i ON p.invoice_id = i.id
+        ${baseFilter}
+        GROUP BY DATE(p.collected_at)
+        ORDER BY DATE(p.collected_at) DESC
+      `, params);
+      reportRows = rows;
+    } else if (reportType === 'cashier') {
+      const [rows]: any = await pool.query(`
+        SELECT p.collector_id, p.collector_name,
+               COUNT(*) AS receipt_count,
+               COALESCE(SUM(CASE WHEN p.status NOT IN ('CANCELLED', 'REVERSED') THEN p.amount_paid ELSE 0 END), 0) AS total_collected,
+               COALESCE(SUM(CASE WHEN p.payment_method = 'CASH' AND p.status NOT IN ('CANCELLED', 'REVERSED') THEN p.amount_paid ELSE 0 END), 0) AS cash_amount,
+               COALESCE(SUM(CASE WHEN p.payment_method != 'CASH' AND p.status NOT IN ('CANCELLED', 'REVERSED') THEN p.amount_paid ELSE 0 END), 0) AS non_cash_amount
+        FROM payments p
+        LEFT JOIN invoices i ON p.invoice_id = i.id
+        ${baseFilter}
+        GROUP BY p.collector_id, p.collector_name
+        ORDER BY total_collected DESC
+      `, params);
+      reportRows = rows;
+    } else if (reportType === 'center') {
+      const [rows]: any = await pool.query(`
+        SELECT COALESCE(p.center_id, 'none') AS center_id,
+               COALESCE(p.center_name, 'المركز الرئيسي') AS center_name,
+               COUNT(*) AS receipt_count,
+               COALESCE(SUM(CASE WHEN p.status NOT IN ('CANCELLED', 'REVERSED') THEN p.amount_paid ELSE 0 END), 0) AS total_collected,
+               COALESCE(SUM(CASE WHEN p.payment_method = 'CASH' AND p.status NOT IN ('CANCELLED', 'REVERSED') THEN p.amount_paid ELSE 0 END), 0) AS cash_amount
+        FROM payments p
+        LEFT JOIN invoices i ON p.invoice_id = i.id
+        ${baseFilter}
+        GROUP BY p.center_id, p.center_name
+        ORDER BY total_collected DESC
+      `, params);
+      reportRows = rows;
+    } else if (reportType === 'property') {
+      const [rows]: any = await pool.query(`
+        SELECT p.property_name,
+               COUNT(*) AS receipt_count,
+               COALESCE(SUM(CASE WHEN p.status NOT IN ('CANCELLED', 'REVERSED') THEN p.amount_paid ELSE 0 END), 0) AS total_collected,
+               COALESCE(SUM(CASE WHEN p.account_type = 'RENT' AND p.status NOT IN ('CANCELLED', 'REVERSED') THEN p.amount_paid ELSE 0 END), 0) AS rent_amount,
+               COALESCE(SUM(CASE WHEN p.account_type = 'ELECTRICITY' AND p.status NOT IN ('CANCELLED', 'REVERSED') THEN p.amount_paid ELSE 0 END), 0) AS electricity_amount,
+               COALESCE(SUM(CASE WHEN p.account_type = 'WATER' AND p.status NOT IN ('CANCELLED', 'REVERSED') THEN p.amount_paid ELSE 0 END), 0) AS water_amount
+        FROM payments p
+        LEFT JOIN invoices i ON p.invoice_id = i.id
+        ${baseFilter}
+        GROUP BY p.property_name
+        ORDER BY total_collected DESC
+      `, params);
+      reportRows = rows;
+    } else if (reportType === 'cancelled') {
+      const [rows]: any = await pool.query(`
+        SELECT p.*, i.invoice_number
+        FROM payments p
+        LEFT JOIN invoices i ON p.invoice_id = i.id
+        ${baseFilter} AND p.status IN ('CANCELLED', 'REVERSED')
+        ORDER BY p.collected_at DESC
+      `, params);
+      reportRows = rows;
+    } else {
+      // Default: detailed receipts list
+      const [rows]: any = await pool.query(`
+        SELECT p.*, i.invoice_number
+        FROM payments p
+        LEFT JOIN invoices i ON p.invoice_id = i.id
+        ${baseFilter}
+        ORDER BY p.collected_at DESC
+        LIMIT 1000
+      `, params);
+      reportRows = rows;
+    }
+
+    // Overall summary
+    const [sumRows]: any = await pool.query(`
+      SELECT COUNT(*) AS total_receipts,
+             COALESCE(SUM(CASE WHEN p.status NOT IN ('CANCELLED', 'REVERSED') THEN p.amount_paid ELSE 0 END), 0) AS net_collected,
+             COALESCE(SUM(CASE WHEN p.status = 'CANCELLED' THEN p.amount_paid ELSE 0 END), 0) AS total_cancelled,
+             COALESCE(SUM(CASE WHEN p.status = 'REVERSED' THEN p.amount_paid ELSE 0 END), 0) AS total_reversed
+      FROM payments p
+      LEFT JOIN invoices i ON p.invoice_id = i.id
+      ${baseFilter}
+    `, params);
+
+    summary = {
+      totalReceipts: Number(sumRows[0]?.total_receipts || 0),
+      netCollected: Number(sumRows[0]?.net_collected || 0),
+      totalCancelled: Number(sumRows[0]?.total_cancelled || 0),
+      totalReversed: Number(sumRows[0]?.total_reversed || 0)
+    };
+
+    res.json({
+      reportType,
+      rows: reportRows,
+      summary
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 12.12 Recent Collections API (Legacy & Quick List)
 router.get('/collections', async (req: Request, res: Response) => {
   try {
     const pool = await getPool();
@@ -7304,10 +8767,1504 @@ router.get('/collections', async (req: Request, res: Response) => {
       collectorId: r.collector_id,
       collectorName: r.collector_name,
       collectedAt: r.collected_at,
+      status: r.status || 'COMPLETED',
       notes: r.notes,
       qrCodeContent: r.qr_code_content
     }));
     res.json(payments);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 12.13 Audit Logs API
+router.get('/audit-logs', async (req: Request, res: Response) => {
+  try {
+    const pool = await getPool();
+    const { entity, limit = 200 } = req.query;
+    let query = 'SELECT * FROM audit_logs WHERE 1=1';
+    const params: any[] = [];
+    if (entity) {
+      query += ' AND entity = ?';
+      params.push(entity);
+    }
+    query += ' ORDER BY timestamp DESC LIMIT ?';
+    params.push(Number(limit) || 200);
+
+    const [rows]: any = await pool.query(query, params);
+    const logs = rows.map((r: any) => ({
+      id: r.id,
+      userId: r.user_id,
+      userName: r.user_name,
+      action: r.action,
+      entity: r.entity,
+      entityId: r.entity_id,
+      details: r.details,
+      ipAddress: r.ip_address,
+      timestamp: r.timestamp
+    }));
+    res.json(logs);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================================
+// 13. Statements, Accounts, and General Ledger APIs
+// ============================================================================
+
+// 13.1 Dashboard & Financial Summary Ribbon
+router.get('/statements/dashboard', async (req: Request, res: Response) => {
+  try {
+    const pool = await getPool();
+
+    // 1. Total debits, credits, and transaction counts from ledger
+    const [ledgerAgg]: any = await pool.query(`
+      SELECT 
+        COALESCE(SUM(debit), 0) AS total_debits,
+        COALESCE(SUM(credit), 0) AS total_credits,
+        COUNT(*) AS transactions_count
+      FROM tenant_ledger
+    `);
+
+    // 2. Receivables from invoices (unpaid / partially paid)
+    const [recAgg]: any = await pool.query(`
+      SELECT 
+        COALESCE(SUM(remaining_amount), 0) AS total_outstanding,
+        COALESCE(SUM(total_amount), 0) AS total_invoiced,
+        COALESCE(SUM(paid_amount), 0) AS total_invoiced_paid,
+        COUNT(*) AS unpaid_invoices_count
+      FROM invoices
+      WHERE status NOT IN ('PAID', 'CANCELLED')
+    `);
+
+    // 3. Debtors count (tenants with positive balance)
+    const [debtorsAgg]: any = await pool.query(`
+      SELECT COUNT(*) AS debtors_count
+      FROM tenants
+      WHERE current_balance > 0
+    `);
+
+    // 4. Completed collections total
+    const [collectionsAgg]: any = await pool.query(`
+      SELECT 
+        COALESCE(SUM(amount_paid), 0) AS total_collected,
+        COUNT(*) AS completed_receipts_count
+      FROM payments
+      WHERE status = 'COMPLETED'
+    `);
+
+    // 5. Aging breakdown based strictly on due_date
+    const [agingRows]: any = await pool.query(`
+      SELECT 
+        CASE 
+          WHEN DATEDIFF(CURDATE(), due_date) <= 0 THEN 'CURRENT'
+          WHEN DATEDIFF(CURDATE(), due_date) BETWEEN 1 AND 30 THEN 'DAYS_1_30'
+          WHEN DATEDIFF(CURDATE(), due_date) BETWEEN 31 AND 60 THEN 'DAYS_31_60'
+          WHEN DATEDIFF(CURDATE(), due_date) BETWEEN 61 AND 90 THEN 'DAYS_61_90'
+          WHEN DATEDIFF(CURDATE(), due_date) BETWEEN 91 AND 180 THEN 'DAYS_91_180'
+          ELSE 'OVER_180'
+        END AS bucket,
+        COUNT(*) AS invoice_count,
+        COALESCE(SUM(remaining_amount), 0) AS total_remaining
+      FROM invoices
+      WHERE remaining_amount > 0 AND status NOT IN ('PAID', 'CANCELLED')
+      GROUP BY bucket
+    `);
+
+    const agingMap: Record<string, { count: number; amount: number }> = {
+      CURRENT: { count: 0, amount: 0 },
+      DAYS_1_30: { count: 0, amount: 0 },
+      DAYS_31_60: { count: 0, amount: 0 },
+      DAYS_61_90: { count: 0, amount: 0 },
+      DAYS_91_180: { count: 0, amount: 0 },
+      OVER_180: { count: 0, amount: 0 }
+    };
+
+    agingRows.forEach((r: any) => {
+      if (agingMap[r.bucket]) {
+        agingMap[r.bucket] = {
+          count: Number(r.invoice_count || 0),
+          amount: Number(r.total_remaining || 0)
+        };
+      }
+    });
+
+    // 6. Recent 10 ledger transactions
+    const [recentTxRows]: any = await pool.query(`
+      SELECT 
+        l.id, l.date, l.reference, l.account_type, l.debit, l.credit, l.balance_after,
+        l.description, l.source_module, l.status, l.created_at,
+        t.name AS tenant_name, t.tenant_code,
+        COALESCE(l.property_name, p.name) AS property_name,
+        COALESCE(l.unit_number, u.unit_number) AS unit_number
+      FROM tenant_ledger l
+      LEFT JOIN tenants t ON l.tenant_id = t.id
+      LEFT JOIN properties p ON l.property_id = p.id
+      LEFT JOIN units u ON l.unit_id = u.id
+      ORDER BY l.date DESC, l.created_at DESC
+      LIMIT 10
+    `);
+
+    res.json({
+      totalDebits: Number(ledgerAgg[0]?.total_debits || 0),
+      totalCredits: Number(ledgerAgg[0]?.total_credits || 0),
+      netLedgerBalance: Number(ledgerAgg[0]?.total_debits || 0) - Number(ledgerAgg[0]?.total_credits || 0),
+      totalOutstandingReceivables: Number(recAgg[0]?.total_outstanding || 0),
+      totalInvoiced: Number(recAgg[0]?.total_invoiced || 0),
+      totalInvoicedPaid: Number(recAgg[0]?.total_invoiced_paid || 0),
+      unpaidInvoicesCount: Number(recAgg[0]?.unpaid_invoices_count || 0),
+      debtorsCount: Number(debtorsAgg[0]?.debtors_count || 0),
+      totalCollections: Number(collectionsAgg[0]?.total_collected || 0),
+      completedReceiptsCount: Number(collectionsAgg[0]?.completed_receipts_count || 0),
+      transactionsCount: Number(ledgerAgg[0]?.transactions_count || 0),
+      agingSummary: agingMap,
+      recentTransactions: recentTxRows.map((r: any) => ({
+        id: r.id,
+        date: r.date,
+        reference: r.reference,
+        accountType: r.account_type,
+        debit: Number(r.debit || 0),
+        credit: Number(r.credit || 0),
+        balanceAfter: Number(r.balance_after || 0),
+        description: r.description,
+        sourceModule: r.source_module || 'MANUAL',
+        status: r.status || 'POSTED',
+        tenantName: r.tenant_name,
+        tenantCode: r.tenant_code,
+        propertyName: r.property_name,
+        unitNumber: r.unit_number,
+        createdAt: r.created_at
+      }))
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 13.2 Tenant Statement API
+router.get('/statements/tenant/:tenantId', async (req: Request, res: Response) => {
+  try {
+    const pool = await getPool();
+    const { tenantId } = req.params;
+    const { 
+      propertyId, unitId, contractId, accountType, 
+      dateFrom, dateTo, status, sourceModule, search 
+    } = req.query;
+
+    // 1. Fetch Tenant details
+    const [tRows]: any = await pool.query('SELECT * FROM tenants WHERE id = ?', [tenantId]);
+    if (!tRows || tRows.length === 0) {
+      return res.status(404).json({ error: 'المستأجر غير موجود' });
+    }
+    const tenant = tRows[0];
+
+    // 2. Calculate Opening Balance strictly before dateFrom
+    let openingBalance = 0;
+    if (dateFrom) {
+      let obQuery = `
+        SELECT COALESCE(SUM(debit), 0) - COALESCE(SUM(credit), 0) AS ob
+        FROM tenant_ledger
+        WHERE tenant_id = ? AND date < ?
+      `;
+      const obParams: any[] = [tenantId, dateFrom];
+      if (accountType && accountType !== 'ALL') {
+        obQuery += ' AND account_type = ?';
+        obParams.push(accountType);
+      }
+      if (propertyId && propertyId !== 'ALL') {
+        obQuery += ' AND property_id = ?';
+        obParams.push(propertyId);
+      }
+      if (unitId && unitId !== 'ALL') {
+        obQuery += ' AND unit_id = ?';
+        obParams.push(unitId);
+      }
+      const [obRows]: any = await pool.query(obQuery, obParams);
+      openingBalance = Number(obRows[0]?.ob || 0);
+    }
+
+    // 3. Fetch Transactions within the period
+    let txQuery = `
+      SELECT 
+        l.id, l.tenant_id, l.date, l.reference, l.account_type, l.debit, l.credit,
+        l.balance_after, l.description, l.user_id, l.created_at,
+        l.property_id, l.property_name, l.unit_id, l.unit_number,
+        l.contract_id, l.invoice_id, l.payment_id, l.source_module, l.status, l.reversal_of,
+        t.name AS tenant_name, t.tenant_code,
+        p.name AS live_property_name, u.unit_number AS live_unit_number
+      FROM tenant_ledger l
+      LEFT JOIN tenants t ON l.tenant_id = t.id
+      LEFT JOIN properties p ON l.property_id = p.id
+      LEFT JOIN units u ON l.unit_id = u.id
+      WHERE l.tenant_id = ?
+    `;
+    const txParams: any[] = [tenantId];
+
+    if (dateFrom) {
+      txQuery += ' AND l.date >= ?';
+      txParams.push(dateFrom);
+    }
+    if (dateTo) {
+      txQuery += ' AND l.date <= ?';
+      txParams.push(dateTo);
+    }
+    if (accountType && accountType !== 'ALL') {
+      txQuery += ' AND l.account_type = ?';
+      txParams.push(accountType);
+    }
+    if (propertyId && propertyId !== 'ALL') {
+      txQuery += ' AND l.property_id = ?';
+      txParams.push(propertyId);
+    }
+    if (unitId && unitId !== 'ALL') {
+      txQuery += ' AND l.unit_id = ?';
+      txParams.push(unitId);
+    }
+    if (contractId && contractId !== 'ALL') {
+      txQuery += ' AND l.contract_id = ?';
+      txParams.push(contractId);
+    }
+    if (status && status !== 'ALL') {
+      txQuery += ' AND l.status = ?';
+      txParams.push(status);
+    }
+    if (sourceModule && sourceModule !== 'ALL') {
+      txQuery += ' AND l.source_module = ?';
+      txParams.push(sourceModule);
+    }
+    if (search) {
+      txQuery += ' AND (l.reference LIKE ? OR l.description LIKE ?)';
+      const s = `%${search}%`;
+      txParams.push(s, s);
+    }
+
+    txQuery += ' ORDER BY l.date ASC, l.created_at ASC, l.id ASC';
+
+    const [txRows]: any = await pool.query(txQuery, txParams);
+
+    // 4. Compute running balance and period totals
+    let currentBalance = openingBalance;
+    let totalDebits = 0;
+    let totalCredits = 0;
+
+    const transactions = txRows.map((r: any) => {
+      const debit = Number(r.debit || 0);
+      const credit = Number(r.credit || 0);
+      totalDebits += debit;
+      totalCredits += credit;
+      currentBalance = currentBalance + debit - credit;
+
+      return {
+        id: r.id,
+        tenantId: r.tenant_id,
+        tenantName: r.tenant_name,
+        tenantCode: r.tenant_code,
+        date: r.date,
+        reference: r.reference,
+        accountType: r.account_type,
+        debit,
+        credit,
+        runningBalance: currentBalance,
+        balanceAfter: Number(r.balance_after || 0),
+        description: r.description,
+        sourceModule: r.source_module || 'MANUAL',
+        status: r.status || 'POSTED',
+        reversalOf: r.reversal_of || null,
+        propertyId: r.property_id,
+        propertyName: r.property_name || r.live_property_name || 'غير محدد',
+        unitId: r.unit_id,
+        unitNumber: r.unit_number || r.live_unit_number || 'غير محدد',
+        contractId: r.contract_id,
+        invoiceId: r.invoice_id,
+        paymentId: r.payment_id,
+        userId: r.user_id,
+        createdAt: r.created_at
+      };
+    });
+
+    const closingBalance = currentBalance;
+
+    // 5. Invoices summary for this tenant
+    const [invRows]: any = await pool.query(
+      'SELECT * FROM invoices WHERE tenant_id = ? ORDER BY issue_date DESC',
+      [tenantId]
+    );
+
+    // 6. Payments summary for this tenant
+    const [payRows]: any = await pool.query(
+      'SELECT * FROM payments WHERE tenant_id = ? ORDER BY collected_at DESC',
+      [tenantId]
+    );
+
+    res.json({
+      tenant: {
+        id: tenant.id,
+        tenantCode: tenant.tenant_code,
+        name: tenant.name,
+        type: tenant.type,
+        nationalId: tenant.national_id,
+        phone: tenant.phone,
+        email: tenant.email,
+        currentBalance: Number(tenant.current_balance || 0),
+        rentBalance: Number(tenant.rent_balance || 0),
+        waterBalance: Number(tenant.water_balance || 0),
+        electricityBalance: Number(tenant.electricity_balance || 0),
+        depositBalance: Number(tenant.deposit_balance || 0)
+      },
+      filters: {
+        propertyId: propertyId || 'ALL',
+        unitId: unitId || 'ALL',
+        contractId: contractId || 'ALL',
+        accountType: accountType || 'ALL',
+        dateFrom: dateFrom || null,
+        dateTo: dateTo || null
+      },
+      openingBalance,
+      totalDebits,
+      totalCredits,
+      closingBalance,
+      transactions,
+      invoices: invRows.map((r: any) => ({
+        id: r.id,
+        invoiceNumber: r.invoice_number,
+        accountType: r.account_type,
+        periodMonth: r.period_month,
+        totalAmount: Number(r.total_amount || 0),
+        paidAmount: Number(r.paid_amount || 0),
+        remainingAmount: Number(r.remaining_amount || 0),
+        issueDate: r.issue_date,
+        dueDate: r.due_date,
+        status: r.status
+      })),
+      payments: payRows.map((r: any) => ({
+        id: r.id,
+        receiptNumber: r.receipt_number,
+        accountType: r.account_type,
+        amountPaid: Number(r.amount_paid || 0),
+        paymentMethod: r.payment_method,
+        collectedAt: r.collected_at,
+        status: r.status
+      }))
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 13.3 Property Statement API
+router.get('/statements/property/:propertyId', async (req: Request, res: Response) => {
+  try {
+    const pool = await getPool();
+    const { propertyId } = req.params;
+    const { dateFrom, dateTo, accountType, tenantId, unitId, search } = req.query;
+
+    const [pRows]: any = await pool.query('SELECT * FROM properties WHERE id = ?', [propertyId]);
+    if (!pRows || pRows.length === 0) {
+      return res.status(404).json({ error: 'العقار غير موجود' });
+    }
+    const property = pRows[0];
+
+    // Opening Balance before dateFrom
+    let openingBalance = 0;
+    if (dateFrom) {
+      let obQuery = `
+        SELECT COALESCE(SUM(debit), 0) - COALESCE(SUM(credit), 0) AS ob
+        FROM tenant_ledger
+        WHERE property_id = ? AND date < ?
+      `;
+      const obParams: any[] = [propertyId, dateFrom];
+      if (accountType && accountType !== 'ALL') {
+        obQuery += ' AND account_type = ?';
+        obParams.push(accountType);
+      }
+      if (unitId && unitId !== 'ALL') {
+        obQuery += ' AND unit_id = ?';
+        obParams.push(unitId);
+      }
+      if (tenantId && tenantId !== 'ALL') {
+        obQuery += ' AND tenant_id = ?';
+        obParams.push(tenantId);
+      }
+      const [obRows]: any = await pool.query(obQuery, obParams);
+      openingBalance = Number(obRows[0]?.ob || 0);
+    }
+
+    // Transactions
+    let txQuery = `
+      SELECT 
+        l.id, l.date, l.reference, l.account_type, l.debit, l.credit,
+        l.description, l.source_module, l.status, l.reversal_of,
+        l.tenant_id, t.name AS tenant_name, t.tenant_code,
+        l.unit_id, COALESCE(l.unit_number, u.unit_number) AS unit_number,
+        l.created_at
+      FROM tenant_ledger l
+      LEFT JOIN tenants t ON l.tenant_id = t.id
+      LEFT JOIN units u ON l.unit_id = u.id
+      WHERE l.property_id = ?
+    `;
+    const txParams: any[] = [propertyId];
+
+    if (dateFrom) {
+      txQuery += ' AND l.date >= ?';
+      txParams.push(dateFrom);
+    }
+    if (dateTo) {
+      txQuery += ' AND l.date <= ?';
+      txParams.push(dateTo);
+    }
+    if (accountType && accountType !== 'ALL') {
+      txQuery += ' AND l.account_type = ?';
+      txParams.push(accountType);
+    }
+    if (unitId && unitId !== 'ALL') {
+      txQuery += ' AND l.unit_id = ?';
+      txParams.push(unitId);
+    }
+    if (tenantId && tenantId !== 'ALL') {
+      txQuery += ' AND l.tenant_id = ?';
+      txParams.push(tenantId);
+    }
+    if (search) {
+      txQuery += ' AND (l.reference LIKE ? OR l.description LIKE ? OR t.name LIKE ?)';
+      const s = `%${search}%`;
+      txParams.push(s, s, s);
+    }
+
+    txQuery += ' ORDER BY l.date ASC, l.created_at ASC';
+
+    const [txRows]: any = await pool.query(txQuery, txParams);
+
+    let currentBalance = openingBalance;
+    let totalDebits = 0;
+    let totalCredits = 0;
+
+    const transactions = txRows.map((r: any) => {
+      const debit = Number(r.debit || 0);
+      const credit = Number(r.credit || 0);
+      totalDebits += debit;
+      totalCredits += credit;
+      currentBalance = currentBalance + debit - credit;
+
+      return {
+        id: r.id,
+        date: r.date,
+        reference: r.reference,
+        accountType: r.account_type,
+        debit,
+        credit,
+        runningBalance: currentBalance,
+        description: r.description,
+        sourceModule: r.source_module || 'MANUAL',
+        status: r.status || 'POSTED',
+        reversalOf: r.reversal_of || null,
+        tenantId: r.tenant_id,
+        tenantName: r.tenant_name,
+        tenantCode: r.tenant_code,
+        unitId: r.unit_id,
+        unitNumber: r.unit_number || 'غير محدد',
+        createdAt: r.created_at
+      };
+    });
+
+    // Breakdown per unit in this property
+    const [unitsSummary]: any = await pool.query(`
+      SELECT 
+        u.id, u.unit_number, u.type, u.floor, u.rent_price, u.status,
+        t.name AS current_tenant_name,
+        COALESCE(SUM(i.remaining_amount), 0) AS total_receivables,
+        COALESCE(SUM(i.paid_amount), 0) AS total_paid,
+        COALESCE(SUM(i.total_amount), 0) AS total_billed
+      FROM units u
+      LEFT JOIN contracts c ON u.id = c.unit_id AND c.status = 'ACTIVE'
+      LEFT JOIN tenants t ON c.tenant_id = t.id
+      LEFT JOIN invoices i ON u.id = i.unit_id AND i.status != 'CANCELLED'
+      WHERE u.property_id = ?
+      GROUP BY u.id
+      ORDER BY u.unit_number ASC
+    `, [propertyId]);
+
+    res.json({
+      property: {
+        id: property.id,
+        code: property.code,
+        name: property.name,
+        type: property.type,
+        address: property.address,
+        totalUnits: Number(property.total_units || 0)
+      },
+      openingBalance,
+      totalDebits,
+      totalCredits,
+      closingBalance: currentBalance,
+      transactions,
+      unitsSummary: unitsSummary.map((u: any) => ({
+        id: u.id,
+        unitNumber: u.unit_number,
+        type: u.type,
+        floor: u.floor,
+        rentPrice: Number(u.rent_price || 0),
+        status: u.status,
+        tenantName: u.current_tenant_name || 'شاغرة / غير مؤجرة',
+        totalReceivables: Number(u.total_receivables || 0),
+        totalPaid: Number(u.total_paid || 0),
+        totalBilled: Number(u.total_billed || 0)
+      }))
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 13.4 Unit Statement API
+router.get('/statements/unit/:unitId', async (req: Request, res: Response) => {
+  try {
+    const pool = await getPool();
+    const { unitId } = req.params;
+    const { dateFrom, dateTo, accountType, tenantId } = req.query;
+
+    const [uRows]: any = await pool.query(`
+      SELECT u.*, p.name AS property_name, p.code AS property_code
+      FROM units u
+      JOIN properties p ON u.property_id = p.id
+      WHERE u.id = ?
+    `, [unitId]);
+
+    if (!uRows || uRows.length === 0) {
+      return res.status(404).json({ error: 'الوحدة غير موجودة' });
+    }
+    const unit = uRows[0];
+
+    // Opening Balance
+    let openingBalance = 0;
+    if (dateFrom) {
+      let obQuery = `
+        SELECT COALESCE(SUM(debit), 0) - COALESCE(SUM(credit), 0) AS ob
+        FROM tenant_ledger
+        WHERE unit_id = ? AND date < ?
+      `;
+      const obParams: any[] = [unitId, dateFrom];
+      if (accountType && accountType !== 'ALL') {
+        obQuery += ' AND account_type = ?';
+        obParams.push(accountType);
+      }
+      if (tenantId && tenantId !== 'ALL') {
+        obQuery += ' AND tenant_id = ?';
+        obParams.push(tenantId);
+      }
+      const [obRows]: any = await pool.query(obQuery, obParams);
+      openingBalance = Number(obRows[0]?.ob || 0);
+    }
+
+    // Transactions
+    let txQuery = `
+      SELECT 
+        l.id, l.date, l.reference, l.account_type, l.debit, l.credit,
+        l.description, l.source_module, l.status, l.reversal_of,
+        l.tenant_id, t.name AS tenant_name, t.tenant_code, l.created_at
+      FROM tenant_ledger l
+      LEFT JOIN tenants t ON l.tenant_id = t.id
+      WHERE l.unit_id = ?
+    `;
+    const txParams: any[] = [unitId];
+
+    if (dateFrom) {
+      txQuery += ' AND l.date >= ?';
+      txParams.push(dateFrom);
+    }
+    if (dateTo) {
+      txQuery += ' AND l.date <= ?';
+      txParams.push(dateTo);
+    }
+    if (accountType && accountType !== 'ALL') {
+      txQuery += ' AND l.account_type = ?';
+      txParams.push(accountType);
+    }
+    if (tenantId && tenantId !== 'ALL') {
+      txQuery += ' AND l.tenant_id = ?';
+      txParams.push(tenantId);
+    }
+
+    txQuery += ' ORDER BY l.date ASC, l.created_at ASC';
+
+    const [txRows]: any = await pool.query(txQuery, txParams);
+
+    let currentBalance = openingBalance;
+    let totalDebits = 0;
+    let totalCredits = 0;
+
+    const transactions = txRows.map((r: any) => {
+      const debit = Number(r.debit || 0);
+      const credit = Number(r.credit || 0);
+      totalDebits += debit;
+      totalCredits += credit;
+      currentBalance = currentBalance + debit - credit;
+
+      return {
+        id: r.id,
+        date: r.date,
+        reference: r.reference,
+        accountType: r.account_type,
+        debit,
+        credit,
+        runningBalance: currentBalance,
+        description: r.description,
+        sourceModule: r.source_module || 'MANUAL',
+        status: r.status || 'POSTED',
+        reversalOf: r.reversal_of || null,
+        tenantId: r.tenant_id,
+        tenantName: r.tenant_name,
+        tenantCode: r.tenant_code,
+        createdAt: r.created_at
+      };
+    });
+
+    res.json({
+      unit: {
+        id: unit.id,
+        unitNumber: unit.unit_number,
+        propertyId: unit.property_id,
+        propertyName: unit.property_name,
+        propertyCode: unit.property_code,
+        type: unit.type,
+        rentPrice: Number(unit.rent_price || 0),
+        status: unit.status
+      },
+      openingBalance,
+      totalDebits,
+      totalCredits,
+      closingBalance: currentBalance,
+      transactions
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 13.5 Invoices Statement API
+router.get('/statements/invoices', async (req: Request, res: Response) => {
+  try {
+    const pool = await getPool();
+    const { 
+      propertyId, tenantId, unitId, accountType, status, 
+      dateFrom, dateTo, search, page = 1, limit = 50 
+    } = req.query;
+
+    let query = `
+      SELECT 
+        i.*,
+        t.tenant_code,
+        (SELECT COUNT(*) FROM payments p WHERE p.invoice_id = i.id AND p.status = 'COMPLETED') AS completed_payments_count
+      FROM invoices i
+      LEFT JOIN tenants t ON i.tenant_id = t.id
+      WHERE 1=1
+    `;
+    const params: any[] = [];
+
+    if (propertyId && propertyId !== 'ALL') {
+      query += ' AND i.property_id = ?';
+      params.push(propertyId);
+    }
+    if (tenantId && tenantId !== 'ALL') {
+      query += ' AND i.tenant_id = ?';
+      params.push(tenantId);
+    }
+    if (unitId && unitId !== 'ALL') {
+      query += ' AND i.unit_id = ?';
+      params.push(unitId);
+    }
+    if (accountType && accountType !== 'ALL') {
+      query += ' AND i.account_type = ?';
+      params.push(accountType);
+    }
+    if (status && status !== 'ALL') {
+      query += ' AND i.status = ?';
+      params.push(status);
+    }
+    if (dateFrom) {
+      query += ' AND i.issue_date >= ?';
+      params.push(dateFrom);
+    }
+    if (dateTo) {
+      query += ' AND i.issue_date <= ?';
+      params.push(dateTo);
+    }
+    if (search) {
+      query += ' AND (i.invoice_number LIKE ? OR i.tenant_name LIKE ? OR i.notes LIKE ?)';
+      const s = `%${search}%`;
+      params.push(s, s, s);
+    }
+
+    // Totals query before pagination
+    const countQuery = `SELECT COUNT(*) AS total_count, COALESCE(SUM(total_amount), 0) AS sum_total, COALESCE(SUM(paid_amount), 0) AS sum_paid, COALESCE(SUM(remaining_amount), 0) AS sum_remaining FROM (${query}) AS sub`;
+    const [totRows]: any = await pool.query(countQuery, params);
+
+    query += ' ORDER BY i.issue_date DESC, i.created_at DESC';
+
+    const pNum = Math.max(1, Number(page));
+    const lNum = Math.max(1, Math.min(200, Number(limit)));
+    const offset = (pNum - 1) * lNum;
+
+    query += ' LIMIT ? OFFSET ?';
+    params.push(lNum, offset);
+
+    const [rows]: any = await pool.query(query, params);
+
+    res.json({
+      totals: {
+        totalCount: Number(totRows[0]?.total_count || 0),
+        sumTotalAmount: Number(totRows[0]?.sum_total || 0),
+        sumPaidAmount: Number(totRows[0]?.sum_paid || 0),
+        sumRemainingAmount: Number(totRows[0]?.sum_remaining || 0)
+      },
+      page: pNum,
+      limit: lNum,
+      invoices: rows.map((r: any) => ({
+        id: r.id,
+        invoiceNumber: r.invoice_number,
+        tenantId: r.tenant_id,
+        tenantName: r.tenant_name,
+        tenantCode: r.tenant_code,
+        propertyId: r.property_id,
+        propertyName: r.property_name,
+        unitId: r.unit_id,
+        unitNumber: r.unit_number,
+        accountType: r.account_type,
+        periodMonth: r.period_month,
+        totalAmount: Number(r.total_amount || 0),
+        paidAmount: Number(r.paid_amount || 0),
+        remainingAmount: Number(r.remaining_amount || 0),
+        issueDate: r.issue_date,
+        dueDate: r.due_date,
+        status: r.status,
+        baseRent: Number(r.base_rent || 0),
+        additionalCharges: Number(r.additional_charges || 0),
+        discount: Number(r.discount || 0),
+        cancelledBy: r.cancelled_by,
+        cancelledAt: r.cancelled_at,
+        cancellationReason: r.cancellation_reason,
+        completedPaymentsCount: Number(r.completed_payments_count || 0),
+        notes: r.notes,
+        createdAt: r.created_at
+      }))
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 13.6 Receivables Statement & Aging API
+router.get('/statements/receivables', async (req: Request, res: Response) => {
+  try {
+    const pool = await getPool();
+    const { 
+      propertyId, tenantId, unitId, accountType, agingBucket, 
+      dateFrom, dateTo, search 
+    } = req.query;
+
+    let query = `
+      SELECT 
+        i.*,
+        t.tenant_code, t.phone AS tenant_phone,
+        DATEDIFF(CURDATE(), i.due_date) AS days_overdue
+      FROM invoices i
+      LEFT JOIN tenants t ON i.tenant_id = t.id
+      WHERE i.remaining_amount > 0 AND i.status NOT IN ('PAID', 'CANCELLED')
+    `;
+    const params: any[] = [];
+
+    if (propertyId && propertyId !== 'ALL') {
+      query += ' AND i.property_id = ?';
+      params.push(propertyId);
+    }
+    if (tenantId && tenantId !== 'ALL') {
+      query += ' AND i.tenant_id = ?';
+      params.push(tenantId);
+    }
+    if (unitId && unitId !== 'ALL') {
+      query += ' AND i.unit_id = ?';
+      params.push(unitId);
+    }
+    if (accountType && accountType !== 'ALL') {
+      query += ' AND i.account_type = ?';
+      params.push(accountType);
+    }
+    if (dateFrom) {
+      query += ' AND i.due_date >= ?';
+      params.push(dateFrom);
+    }
+    if (dateTo) {
+      query += ' AND i.due_date <= ?';
+      params.push(dateTo);
+    }
+    if (search) {
+      query += ' AND (i.invoice_number LIKE ? OR i.tenant_name LIKE ? OR t.phone LIKE ?)';
+      const s = `%${search}%`;
+      params.push(s, s, s);
+    }
+
+    if (agingBucket && agingBucket !== 'ALL') {
+      if (agingBucket === 'CURRENT') {
+        query += ' AND DATEDIFF(CURDATE(), i.due_date) <= 0';
+      } else if (agingBucket === 'DAYS_1_30') {
+        query += ' AND DATEDIFF(CURDATE(), i.due_date) BETWEEN 1 AND 30';
+      } else if (agingBucket === 'DAYS_31_60') {
+        query += ' AND DATEDIFF(CURDATE(), i.due_date) BETWEEN 31 AND 60';
+      } else if (agingBucket === 'DAYS_61_90') {
+        query += ' AND DATEDIFF(CURDATE(), i.due_date) BETWEEN 61 AND 90';
+      } else if (agingBucket === 'DAYS_91_180') {
+        query += ' AND DATEDIFF(CURDATE(), i.due_date) BETWEEN 91 AND 180';
+      } else if (agingBucket === 'OVER_180') {
+        query += ' AND DATEDIFF(CURDATE(), i.due_date) > 180';
+      }
+    }
+
+    query += ' ORDER BY i.due_date ASC';
+
+    const [rows]: any = await pool.query(query, params);
+
+    // Calculate Aging Categories
+    let totalOutstanding = 0;
+    let totalOriginal = 0;
+    let totalPaid = 0;
+    const uniqueTenants = new Set<string>();
+
+    const agingBuckets = {
+      CURRENT: { label: 'مستحقة حديثاً / غير متأخرة', count: 0, amount: 0 },
+      DAYS_1_30: { label: '1–30 يوم', count: 0, amount: 0 },
+      DAYS_31_60: { label: '31–60 يوم', count: 0, amount: 0 },
+      DAYS_61_90: { label: '61–90 يوم', count: 0, amount: 0 },
+      DAYS_91_180: { label: '91–180 يوم', count: 0, amount: 0 },
+      OVER_180: { label: 'أكثر من 180 يوم', count: 0, amount: 0 }
+    };
+
+    const receivables = rows.map((r: any) => {
+      const remaining = Number(r.remaining_amount || 0);
+      const original = Number(r.total_amount || 0);
+      const paid = Number(r.paid_amount || 0);
+      const daysOverdue = Number(r.days_overdue || 0);
+
+      totalOutstanding += remaining;
+      totalOriginal += original;
+      totalPaid += paid;
+      if (r.tenant_id) uniqueTenants.add(r.tenant_id);
+
+      let bucketKey = 'CURRENT';
+      let bucketLabel = 'مستحقة حديثاً';
+      if (daysOverdue > 180) {
+        bucketKey = 'OVER_180';
+        bucketLabel = 'أكثر من 180 يوم';
+      } else if (daysOverdue > 90) {
+        bucketKey = 'DAYS_91_180';
+        bucketLabel = '91–180 يوم';
+      } else if (daysOverdue > 60) {
+        bucketKey = 'DAYS_61_90';
+        bucketLabel = '61–90 يوم';
+      } else if (daysOverdue > 30) {
+        bucketKey = 'DAYS_31_60';
+        bucketLabel = '31–60 يوم';
+      } else if (daysOverdue > 0) {
+        bucketKey = 'DAYS_1_30';
+        bucketLabel = '1–30 يوم';
+      }
+
+      agingBuckets[bucketKey as keyof typeof agingBuckets].count += 1;
+      agingBuckets[bucketKey as keyof typeof agingBuckets].amount += remaining;
+
+      return {
+        id: r.id,
+        invoiceNumber: r.invoice_number,
+        tenantId: r.tenant_id,
+        tenantName: r.tenant_name,
+        tenantCode: r.tenant_code,
+        tenantPhone: r.tenant_phone,
+        propertyId: r.property_id,
+        propertyName: r.property_name,
+        unitId: r.unit_id,
+        unitNumber: r.unit_number,
+        accountType: r.account_type,
+        periodMonth: r.period_month,
+        issueDate: r.issue_date,
+        dueDate: r.due_date,
+        daysOverdue,
+        agingCategory: bucketKey,
+        agingCategoryLabel: bucketLabel,
+        totalAmount: original,
+        paidAmount: paid,
+        remainingAmount: remaining,
+        status: r.status,
+        notes: r.notes
+      };
+    });
+
+    res.json({
+      kpis: {
+        totalOutstanding,
+        totalOriginal,
+        totalPaid,
+        debtorsCount: uniqueTenants.size,
+        unpaidInvoicesCount: receivables.length
+      },
+      agingBuckets,
+      receivables
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 13.7 Collections Statement API
+router.get('/statements/collections', async (req: Request, res: Response) => {
+  try {
+    const pool = await getPool();
+    const { 
+      cashBoxId, centerId, paymentMethod, status, accountType, 
+      dateFrom, dateTo, search 
+    } = req.query;
+
+    let query = `
+      SELECT 
+        p.*,
+        t.tenant_code
+      FROM payments p
+      LEFT JOIN tenants t ON p.tenant_id = t.id
+      WHERE 1=1
+    `;
+    const params: any[] = [];
+
+    if (cashBoxId && cashBoxId !== 'ALL') {
+      query += ' AND p.cash_box_id = ?';
+      params.push(cashBoxId);
+    }
+    if (centerId && centerId !== 'ALL') {
+      query += ' AND p.center_id = ?';
+      params.push(centerId);
+    }
+    if (paymentMethod && paymentMethod !== 'ALL') {
+      query += ' AND p.payment_method = ?';
+      params.push(paymentMethod);
+    }
+    if (status && status !== 'ALL') {
+      query += ' AND p.status = ?';
+      params.push(status);
+    }
+    if (accountType && accountType !== 'ALL') {
+      query += ' AND p.account_type = ?';
+      params.push(accountType);
+    }
+    if (dateFrom) {
+      query += ' AND DATE(p.collected_at) >= ?';
+      params.push(dateFrom);
+    }
+    if (dateTo) {
+      query += ' AND DATE(p.collected_at) <= ?';
+      params.push(dateTo);
+    }
+    if (search) {
+      query += ' AND (p.receipt_number LIKE ? OR p.tenant_name LIKE ? OR p.collector_name LIKE ?)';
+      const s = `%${search}%`;
+      params.push(s, s, s);
+    }
+
+    query += ' ORDER BY p.collected_at DESC';
+
+    const [rows]: any = await pool.query(query, params);
+
+    let totalCompleted = 0;
+    let totalCancelled = 0;
+    let totalReversed = 0;
+    const methodTotals: Record<string, number> = {};
+
+    const collections = rows.map((r: any) => {
+      const amount = Number(r.amount_paid || 0);
+      if (r.status === 'COMPLETED') {
+        totalCompleted += amount;
+        methodTotals[r.payment_method] = (methodTotals[r.payment_method] || 0) + amount;
+      } else if (r.status === 'CANCELLED') {
+        totalCancelled += amount;
+      } else if (r.status === 'REVERSED') {
+        totalReversed += amount;
+      }
+
+      return {
+        id: r.id,
+        receiptNumber: r.receipt_number,
+        invoiceId: r.invoice_id,
+        tenantId: r.tenant_id,
+        tenantName: r.tenant_name,
+        tenantCode: r.tenant_code,
+        propertyName: r.property_name,
+        unitNumber: r.unit_number,
+        accountType: r.account_type,
+        amountPaid: amount,
+        paymentMethod: r.payment_method,
+        collectorName: r.collector_name,
+        collectedAt: r.collected_at,
+        centerName: r.center_name,
+        cashBoxName: r.cash_box_name,
+        status: r.status,
+        cancellationReason: r.cancellation_reason,
+        reversalReason: r.reversal_reason,
+        notes: r.notes,
+        qrCodeContent: r.qr_code_content
+      };
+    });
+
+    res.json({
+      summary: {
+        totalCompleted,
+        totalCancelled,
+        totalReversed,
+        netCollected: totalCompleted,
+        count: collections.length,
+        methodTotals
+      },
+      collections
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 13.8 General Ledger API
+router.get('/statements/general-ledger', async (req: Request, res: Response) => {
+  try {
+    const pool = await getPool();
+    const { 
+      accountType, sourceModule, reference, status, 
+      propertyId, tenantId, dateFrom, dateTo, search,
+      page = 1, limit = 100 
+    } = req.query;
+
+    let query = `
+      SELECT 
+        l.*,
+        t.name AS tenant_name, t.tenant_code,
+        COALESCE(l.property_name, p.name) AS live_property_name,
+        COALESCE(l.unit_number, u.unit_number) AS live_unit_number
+      FROM tenant_ledger l
+      LEFT JOIN tenants t ON l.tenant_id = t.id
+      LEFT JOIN properties p ON l.property_id = p.id
+      LEFT JOIN units u ON l.unit_id = u.id
+      WHERE 1=1
+    `;
+    const params: any[] = [];
+
+    if (accountType && accountType !== 'ALL') {
+      query += ' AND l.account_type = ?';
+      params.push(accountType);
+    }
+    if (sourceModule && sourceModule !== 'ALL') {
+      query += ' AND l.source_module = ?';
+      params.push(sourceModule);
+    }
+    if (status && status !== 'ALL') {
+      query += ' AND l.status = ?';
+      params.push(status);
+    }
+    if (propertyId && propertyId !== 'ALL') {
+      query += ' AND l.property_id = ?';
+      params.push(propertyId);
+    }
+    if (tenantId && tenantId !== 'ALL') {
+      query += ' AND l.tenant_id = ?';
+      params.push(tenantId);
+    }
+    if (reference) {
+      query += ' AND l.reference LIKE ?';
+      params.push(`%${reference}%`);
+    }
+    if (dateFrom) {
+      query += ' AND l.date >= ?';
+      params.push(dateFrom);
+    }
+    if (dateTo) {
+      query += ' AND l.date <= ?';
+      params.push(dateTo);
+    }
+    if (search) {
+      query += ' AND (l.reference LIKE ? OR l.description LIKE ? OR t.name LIKE ?)';
+      const s = `%${search}%`;
+      params.push(s, s, s);
+    }
+
+    // Totals query
+    const countQuery = `
+      SELECT 
+        COUNT(*) AS total_count,
+        COALESCE(SUM(debit), 0) AS total_debits,
+        COALESCE(SUM(credit), 0) AS total_credits
+      FROM (${query}) AS sub
+    `;
+    const [totRows]: any = await pool.query(countQuery, params);
+
+    query += ' ORDER BY l.date ASC, l.created_at ASC, l.id ASC';
+
+    const pNum = Math.max(1, Number(page));
+    const lNum = Math.max(1, Math.min(500, Number(limit)));
+    const offset = (pNum - 1) * lNum;
+
+    query += ' LIMIT ? OFFSET ?';
+    params.push(lNum, offset);
+
+    const [rows]: any = await pool.query(query, params);
+
+    // Compute continuous running balance for the queried rows
+    let running = 0;
+    const entries = rows.map((r: any) => {
+      const debit = Number(r.debit || 0);
+      const credit = Number(r.credit || 0);
+      running = running + debit - credit;
+
+      return {
+        id: r.id,
+        date: r.date,
+        reference: r.reference,
+        accountType: r.account_type,
+        debit,
+        credit,
+        runningBalance: running,
+        balanceAfter: Number(r.balance_after || 0),
+        description: r.description,
+        sourceModule: r.source_module || 'MANUAL',
+        status: r.status || 'POSTED',
+        reversalOf: r.reversal_of || null,
+        tenantId: r.tenant_id,
+        tenantName: r.tenant_name,
+        tenantCode: r.tenant_code,
+        propertyId: r.property_id,
+        propertyName: r.property_name || r.live_property_name || 'غير محدد',
+        unitId: r.unit_id,
+        unitNumber: r.unit_number || r.live_unit_number || 'غير محدد',
+        createdAt: r.created_at
+      };
+    });
+
+    res.json({
+      summary: {
+        totalCount: Number(totRows[0]?.total_count || 0),
+        totalDebits: Number(totRows[0]?.total_debits || 0),
+        totalCredits: Number(totRows[0]?.total_credits || 0),
+        netBalance: Number(totRows[0]?.total_debits || 0) - Number(totRows[0]?.total_credits || 0)
+      },
+      page: pNum,
+      limit: lNum,
+      entries
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 13.9 Account Balances & Trial Balance Status API
+router.get('/statements/account-balances', async (req: Request, res: Response) => {
+  try {
+    const pool = await getPool();
+
+    // 1. Rent Receivables (1201)
+    const [rentRows]: any = await pool.query(`
+      SELECT 
+        COALESCE(SUM(debit), 0) AS debit_total,
+        COALESCE(SUM(credit), 0) AS credit_total
+      FROM tenant_ledger
+      WHERE account_type = 'RENT'
+    `);
+    const rentDebit = Number(rentRows[0]?.debit_total || 0);
+    const rentCredit = Number(rentRows[0]?.credit_total || 0);
+
+    // 2. Electricity Receivables (1202)
+    const [elecRows]: any = await pool.query(`
+      SELECT 
+        COALESCE(SUM(debit), 0) AS debit_total,
+        COALESCE(SUM(credit), 0) AS credit_total
+      FROM tenant_ledger
+      WHERE account_type = 'ELECTRICITY'
+    `);
+    const elecDebit = Number(elecRows[0]?.debit_total || 0);
+    const elecCredit = Number(elecRows[0]?.credit_total || 0);
+
+    // 3. Water Receivables (1203)
+    const [waterRows]: any = await pool.query(`
+      SELECT 
+        COALESCE(SUM(debit), 0) AS debit_total,
+        COALESCE(SUM(credit), 0) AS credit_total
+      FROM tenant_ledger
+      WHERE account_type = 'WATER'
+    `);
+    const waterDebit = Number(waterRows[0]?.debit_total || 0);
+    const waterCredit = Number(waterRows[0]?.credit_total || 0);
+
+    // 4. Cash in Hand / Cash Boxes (1101)
+    const [boxRows]: any = await pool.query(`
+      SELECT 
+        COALESCE(SUM(opening_balance), 0) AS total_opening,
+        COALESCE(SUM(current_balance), 0) AS total_current
+      FROM cash_boxes
+      WHERE status = 'ACTIVE'
+    `);
+    const [cashCollectedRows]: any = await pool.query(`
+      SELECT COALESCE(SUM(amount_paid), 0) AS cash_collected
+      FROM payments
+      WHERE payment_method = 'CASH' AND status = 'COMPLETED'
+    `);
+    const boxOpening = Number(boxRows[0]?.total_opening || 0);
+    const boxCurrent = Number(boxRows[0]?.total_current || 0);
+    const boxCashIn = Number(cashCollectedRows[0]?.cash_collected || 0);
+
+    // 5. Tenant Security Deposits (2101)
+    const [depRows]: any = await pool.query(`
+      SELECT COALESCE(SUM(deposit_amount), 0) AS total_deposits
+      FROM deposits
+      WHERE status = 'HELD'
+    `);
+    const depositTotal = Number(depRows[0]?.total_deposits || 0);
+
+    // 6. Rental Revenue (4101)
+    const [rentRevRows]: any = await pool.query(`
+      SELECT COALESCE(SUM(total_amount), 0) AS rent_rev
+      FROM invoices
+      WHERE account_type = 'RENT' AND status != 'CANCELLED'
+    `);
+    const rentRevenue = Number(rentRevRows[0]?.rent_rev || 0);
+
+    // 7. Electricity Revenue (4201)
+    const [elecRevRows]: any = await pool.query(`
+      SELECT COALESCE(SUM(total_amount), 0) AS elec_rev
+      FROM invoices
+      WHERE account_type = 'ELECTRICITY' AND status != 'CANCELLED'
+    `);
+    const elecRevenue = Number(elecRevRows[0]?.elec_rev || 0);
+
+    // 8. Water Revenue (4301)
+    const [waterRevRows]: any = await pool.query(`
+      SELECT COALESCE(SUM(total_amount), 0) AS water_rev
+      FROM invoices
+      WHERE account_type = 'WATER' AND status != 'CANCELLED'
+    `);
+    const waterRevenue = Number(waterRevRows[0]?.water_rev || 0);
+
+    const accounts = [
+      {
+        accountCode: '1101',
+        accountName: 'الصناديق والخزائن النقدية',
+        category: 'أصول متداولة (نقدية)',
+        nature: 'DEBIT',
+        openingBalance: boxOpening,
+        debitTotal: boxCashIn,
+        creditTotal: 0,
+        closingBalance: boxCurrent,
+        notes: 'الرصيد الفعلي الحالي المتوفر في الصناديق الخزنية المعتمدة'
+      },
+      {
+        accountCode: '1201',
+        accountName: 'ذمم مستأجري عقود الإيجار',
+        category: 'أصول متداولة (ذمم مدينة)',
+        nature: 'DEBIT',
+        openingBalance: 0,
+        debitTotal: rentDebit,
+        creditTotal: rentCredit,
+        closingBalance: rentDebit - rentCredit,
+        notes: 'صافي مستحقات الإيجارات القائمة على المستأجرين'
+      },
+      {
+        accountCode: '1202',
+        accountName: 'ذمم مشتركي استهلاك الكهرباء',
+        category: 'أصول متداولة (ذمم مدينة)',
+        nature: 'DEBIT',
+        openingBalance: 0,
+        debitTotal: elecDebit,
+        creditTotal: elecCredit,
+        closingBalance: elecDebit - elecCredit,
+        notes: 'صافي مستحقات استهلاك الكهرباء وخدمات العدادات'
+      },
+      {
+        accountCode: '1203',
+        accountName: 'ذمم مستهلكي خدمات المياه المشتركة',
+        category: 'أصول متداولة (ذمم مدينة)',
+        nature: 'DEBIT',
+        openingBalance: 0,
+        debitTotal: waterDebit,
+        creditTotal: waterCredit,
+        closingBalance: waterDebit - waterCredit,
+        notes: 'صافي مستحقات فواتير المياه والوايتات الموزعة'
+      },
+      {
+        accountCode: '2101',
+        accountName: 'أمانات وتأمينات المستأجرين المحتجزة',
+        category: 'التزامات متداولة (أمانات)',
+        nature: 'CREDIT',
+        openingBalance: 0,
+        debitTotal: 0,
+        creditTotal: depositTotal,
+        closingBalance: depositTotal,
+        notes: 'مبالغ الضمانات والتأمينات النقدية المحتجزة لصالح العقود النشطة'
+      },
+      {
+        accountCode: '4101',
+        accountName: 'إيرادات الإيجارات المستحقة',
+        category: 'إيرادات النشاط العقاري',
+        nature: 'CREDIT',
+        openingBalance: 0,
+        debitTotal: 0,
+        creditTotal: rentRevenue,
+        closingBalance: rentRevenue,
+        notes: 'إجمالي الفواتير الصادرة للإيجارات الدورية المعتمدة'
+      },
+      {
+        accountCode: '4201',
+        accountName: 'إيرادات خدمات واستهلاك الكهرباء',
+        category: 'إيرادات خدمات المرافق',
+        nature: 'CREDIT',
+        openingBalance: 0,
+        debitTotal: 0,
+        creditTotal: elecRevenue,
+        closingBalance: elecRevenue,
+        notes: 'إجمالي الفواتير الصادرة لاستهلاك الكهرباء'
+      },
+      {
+        accountCode: '4301',
+        accountName: 'إيرادات توزيع تكاليف المياه والتشغيل',
+        category: 'إيرادات خدمات المرافق',
+        nature: 'CREDIT',
+        openingBalance: 0,
+        debitTotal: 0,
+        creditTotal: waterRevenue,
+        closingBalance: waterRevenue,
+        notes: 'إجمالي التكاليف الموزعة والمفوترة لاستهلاك المياه'
+      }
+    ];
+
+    const totalDebits = accounts.reduce((sum, a) => sum + (a.nature === 'DEBIT' ? a.closingBalance : 0), 0);
+    const totalCredits = accounts.reduce((sum, a) => sum + (a.nature === 'CREDIT' ? a.closingBalance : 0), 0);
+
+    res.json({
+      accounts,
+      totals: {
+        totalDebits,
+        totalCredits,
+        difference: totalDebits - totalCredits
+      },
+      trialBalanceStatus: {
+        isDoubleEntryComplete: false,
+        explanation: 'يعمل النظام حالياً بهيكلية دفاتر أستاذ فرعية للذمم المدينة والصناديق (Sub-Ledger Architecture) ومطابقة أرصدة المستأجرين والفواتير بنسبة 100%. لم يتم تفعيل القيود المزدوجة المتوازنة لكافة مراكز التكلفة والمصاريف التشغيلية والأصول الثابتة بعد، لذا تعرض هذه الشاشة الأرصدة التحليلية لمطابقة الذمم والتحصيلات.'
+      }
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 13.10 Single Transaction Details Modal API
+router.get('/statements/transaction/:id', async (req: Request, res: Response) => {
+  try {
+    const pool = await getPool();
+    const { id } = req.params;
+
+    const [rows]: any = await pool.query(`
+      SELECT 
+        l.*,
+        t.name AS tenant_name, t.tenant_code, t.phone AS tenant_phone, t.national_id,
+        p.name AS property_name_live, p.code AS property_code,
+        u.unit_number AS unit_number_live, u.type AS unit_type,
+        i.invoice_number, i.total_amount AS invoice_total, i.paid_amount AS invoice_paid, i.remaining_amount AS invoice_remaining, i.status AS invoice_status, i.period_month,
+        pay.receipt_number, pay.payment_method, pay.collector_name, pay.status AS payment_status, pay.cancellation_reason, pay.reversal_reason, pay.qr_code_content,
+        u_user.name AS created_by_name
+      FROM tenant_ledger l
+      LEFT JOIN tenants t ON l.tenant_id = t.id
+      LEFT JOIN properties p ON l.property_id = p.id
+      LEFT JOIN units u ON l.unit_id = u.id
+      LEFT JOIN invoices i ON l.invoice_id = i.id OR l.reference = i.invoice_number
+      LEFT JOIN payments pay ON l.payment_id = pay.id OR l.reference = pay.receipt_number
+      LEFT JOIN users u_user ON l.user_id = u_user.id
+      WHERE l.id = ?
+    `, [id]);
+
+    if (!rows || rows.length === 0) {
+      return res.status(404).json({ error: 'الحركة المالية غير موجودة' });
+    }
+    const r = rows[0];
+
+    // Find linked reversal or original if applicable
+    let linkedTransaction: any = null;
+    if (r.reversal_of) {
+      const [origRows]: any = await pool.query(
+        'SELECT id, date, reference, debit, credit, description FROM tenant_ledger WHERE reference = ? LIMIT 1',
+        [r.reversal_of]
+      );
+      if (origRows && origRows.length > 0) {
+        linkedTransaction = {
+          type: 'ORIGINAL_TRANSACTION',
+          ...origRows[0]
+        };
+      }
+    } else {
+      const [revRows]: any = await pool.query(
+        'SELECT id, date, reference, debit, credit, description FROM tenant_ledger WHERE reversal_of = ? OR reference = ? LIMIT 1',
+        [r.reference, `REV-${r.reference}`]
+      );
+      if (revRows && revRows.length > 0) {
+        linkedTransaction = {
+          type: 'REVERSAL_TRANSACTION',
+          ...revRows[0]
+        };
+      }
+    }
+
+    res.json({
+      id: r.id,
+      date: r.date,
+      reference: r.reference,
+      accountType: r.account_type,
+      debit: Number(r.debit || 0),
+      credit: Number(r.credit || 0),
+      balanceAfter: Number(r.balance_after || 0),
+      description: r.description,
+      sourceModule: r.source_module || 'MANUAL',
+      status: r.status || 'POSTED',
+      reversalOf: r.reversal_of || null,
+      createdAt: r.created_at,
+      user: {
+        id: r.user_id,
+        name: r.created_by_name || 'مسؤول النظام'
+      },
+      tenant: {
+        id: r.tenant_id,
+        name: r.tenant_name,
+        code: r.tenant_code,
+        phone: r.tenant_phone,
+        nationalId: r.national_id
+      },
+      property: {
+        id: r.property_id,
+        name: r.property_name || r.property_name_live || 'غير محدد',
+        code: r.property_code
+      },
+      unit: {
+        id: r.unit_id,
+        unitNumber: r.unit_number || r.unit_number_live || 'غير محدد',
+        type: r.unit_type
+      },
+      linkedInvoice: r.invoice_number ? {
+        id: r.invoice_id,
+        invoiceNumber: r.invoice_number,
+        periodMonth: r.period_month,
+        totalAmount: Number(r.invoice_total || 0),
+        paidAmount: Number(r.invoice_paid || 0),
+        remainingAmount: Number(r.invoice_remaining || 0),
+        status: r.invoice_status
+      } : null,
+      linkedPayment: r.receipt_number ? {
+        id: r.payment_id,
+        receiptNumber: r.receipt_number,
+        paymentMethod: r.payment_method,
+        collectorName: r.collector_name,
+        status: r.payment_status,
+        cancellationReason: r.cancellation_reason,
+        reversalReason: r.reversal_reason,
+        qrCodeContent: r.qr_code_content
+      } : null,
+      linkedTransaction
+    });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

@@ -1307,8 +1307,8 @@ export const ERP_API = {
     return await res.json();
   },
 
-  // 11. Tenant Statements from MySQL Ledger
-  async getTenantStatement(tenantId: string, accountType?: string): Promise<any> {
+  // 11. Tenant Statements from MySQL Ledger (Legacy)
+  async getTenantStatementLegacy(tenantId: string, accountType?: string): Promise<any> {
     let url = `${API_BASE}/tenant-statement/${tenantId}`;
     if (accountType && accountType !== 'ALL') {
       url += `?accountType=${accountType}`;
@@ -1323,5 +1323,459 @@ export const ERP_API = {
     const res = await safeFetch(`${API_BASE}/collections`);
     if (!res.ok) throw new Error('فشل جلب سجل التحصيلات من MySQL');
     return await res.json();
+  },
+
+  // 13. Collections, Cash Boxes & Collection Centers Module
+  async getCollectionDashboard(): Promise<any> {
+    const res = await safeFetch(`${API_BASE}/collections/dashboard`);
+    if (!res.ok) throw new Error('فشل تحميل مؤشرات لوحة التحصيل من MySQL');
+    return await res.json();
+  },
+
+  async getCollectionCenters(filters?: { status?: string; search?: string }): Promise<any[]> {
+    const params = new URLSearchParams();
+    if (filters?.status && filters.status !== 'ALL') params.append('status', filters.status);
+    if (filters?.search) params.append('search', filters.search);
+    const res = await safeFetch(`${API_BASE}/collections/centers?${params.toString()}`);
+    if (!res.ok) throw new Error('فشل جلب مراكز التحصيل من MySQL');
+    return await res.json();
+  },
+
+  async createCollectionCenter(data: any): Promise<any> {
+    const res = await safeFetch(`${API_BASE}/collections/centers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'فشل حفظ مركز التحصيل في MySQL');
+    }
+    return await res.json();
+  },
+
+  async updateCollectionCenter(id: string, data: any): Promise<any> {
+    const res = await safeFetch(`${API_BASE}/collections/centers/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'فشل تحديث مركز التحصيل في MySQL');
+    }
+    return await res.json();
+  },
+
+  async updateCollectionCenterStatus(id: string, status: 'ACTIVE' | 'INACTIVE'): Promise<any> {
+    const res = await safeFetch(`${API_BASE}/collections/centers/${id}/status`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status })
+    });
+    if (!res.ok) throw new Error('فشل تعديل حالة مركز التحصيل');
+    return await res.json();
+  },
+
+  async getCollectionCashBoxes(filters?: { centerId?: string; status?: string }): Promise<any[]> {
+    const params = new URLSearchParams();
+    if (filters?.centerId && filters.centerId !== 'ALL') params.append('centerId', filters.centerId);
+    if (filters?.status && filters.status !== 'ALL') params.append('status', filters.status);
+    const res = await safeFetch(`${API_BASE}/collections/cash-boxes?${params.toString()}`);
+    if (!res.ok) throw new Error('فشل جلب الصناديق الخزنية من MySQL');
+    return await res.json();
+  },
+
+  async createCollectionCashBox(data: any): Promise<any> {
+    const res = await safeFetch(`${API_BASE}/collections/cash-boxes`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'فشل إنشاء الصندوق الخزني في MySQL');
+    }
+    return await res.json();
+  },
+
+  async updateCollectionCashBox(id: string, data: any): Promise<any> {
+    const res = await safeFetch(`${API_BASE}/collections/cash-boxes/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'فشل تحديث بيانات الصندوق الخزني في MySQL');
+    }
+    return await res.json();
+  },
+
+  async updateCollectionCashBoxStatus(id: string, status: string): Promise<any> {
+    const res = await safeFetch(`${API_BASE}/collections/cash-boxes/${id}/status`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status })
+    });
+    if (!res.ok) throw new Error('فشل تعديل حالة الصندوق الخزني');
+    return await res.json();
+  },
+
+  async getOutstandingReceivables(filters?: {
+    tenantId?: string;
+    propertyId?: string;
+    accountType?: string;
+    status?: string;
+    search?: string;
+  }): Promise<any[]> {
+    const params = new URLSearchParams();
+    if (filters?.tenantId && filters.tenantId !== 'ALL') params.append('tenantId', filters.tenantId);
+    if (filters?.propertyId && filters.propertyId !== 'ALL') params.append('propertyId', filters.propertyId);
+    if (filters?.accountType && filters.accountType !== 'ALL') params.append('accountType', filters.accountType);
+    if (filters?.status && filters.status !== 'ALL') params.append('status', filters.status);
+    if (filters?.search) params.append('search', filters.search);
+
+    const res = await safeFetch(`${API_BASE}/collections/receivables?${params.toString()}`);
+    if (!res.ok) throw new Error('فشل جلب الذمم المستحقة من MySQL');
+    return await res.json();
+  },
+
+  async getCollectionReceipts(filters?: {
+    propertyId?: string;
+    tenantId?: string;
+    centerId?: string;
+    cashBoxId?: string;
+    paymentMethod?: string;
+    status?: string;
+    startDate?: string;
+    endDate?: string;
+    search?: string;
+  }): Promise<any[]> {
+    const params = new URLSearchParams();
+    if (filters?.propertyId && filters.propertyId !== 'ALL') params.append('propertyId', filters.propertyId);
+    if (filters?.tenantId && filters.tenantId !== 'ALL') params.append('tenantId', filters.tenantId);
+    if (filters?.centerId && filters.centerId !== 'ALL') params.append('centerId', filters.centerId);
+    if (filters?.cashBoxId && filters.cashBoxId !== 'ALL') params.append('cashBoxId', filters.cashBoxId);
+    if (filters?.paymentMethod && filters.paymentMethod !== 'ALL') params.append('paymentMethod', filters.paymentMethod);
+    if (filters?.status && filters.status !== 'ALL') params.append('status', filters.status);
+    if (filters?.startDate) params.append('startDate', filters.startDate);
+    if (filters?.endDate) params.append('endDate', filters.endDate);
+    if (filters?.search) params.append('search', filters.search);
+
+    const res = await safeFetch(`${API_BASE}/collections/receipts?${params.toString()}`);
+    if (!res.ok) throw new Error('فشل جلب سجل سندات القبض من MySQL');
+    return await res.json();
+  },
+
+  async getCollectionReceipt(id: string): Promise<any> {
+    const res = await safeFetch(`${API_BASE}/collections/receipts/${id}`);
+    if (!res.ok) throw new Error('فشل جلب تفاصيل سند القبض');
+    return await res.json();
+  },
+
+  async createCollectionReceipt(data: any): Promise<any> {
+    const res = await safeFetch(`${API_BASE}/collections/receipts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'فشل إصدار سند القبض وترحيل المعاملة المالية');
+    }
+    return await res.json();
+  },
+
+  async cancelCollectionReceipt(id: string, data: { cancellationReason: string; cancelledBy?: string }): Promise<any> {
+    const res = await safeFetch(`${API_BASE}/collections/receipts/${id}/cancel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'فشل إلغاء سند القبض في MySQL');
+    }
+    return await res.json();
+  },
+
+  async reverseCollectionReceipt(id: string, data: { reversalReason: string; reversedBy?: string }): Promise<any> {
+    const res = await safeFetch(`${API_BASE}/collections/receipts/${id}/reverse`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'فشل عكس ترحيل سند القبض في MySQL');
+    }
+    return await res.json();
+  },
+
+  async getCashBoxClosings(filters?: { cashBoxId?: string; startDate?: string; endDate?: string }): Promise<any[]> {
+    const params = new URLSearchParams();
+    if (filters?.cashBoxId && filters.cashBoxId !== 'ALL') params.append('cashBoxId', filters.cashBoxId);
+    if (filters?.startDate) params.append('startDate', filters.startDate);
+    if (filters?.endDate) params.append('endDate', filters.endDate);
+    const res = await safeFetch(`${API_BASE}/collections/closings?${params.toString()}`);
+    if (!res.ok) throw new Error('فشل جلب محاضر إغلاق الصناديق من MySQL');
+    return await res.json();
+  },
+
+  async createCashBoxClosing(data: any): Promise<any> {
+    const res = await safeFetch(`${API_BASE}/collections/closings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'فشل إغلاق الصندوق الخزني');
+    }
+    return await res.json();
+  },
+
+  async getCollectionReports(filters: {
+    reportType: string;
+    startDate?: string;
+    endDate?: string;
+    propertyId?: string;
+    tenantId?: string;
+    centerId?: string;
+    cashBoxId?: string;
+    paymentMethod?: string;
+  }): Promise<any> {
+    const params = new URLSearchParams();
+    params.append('reportType', filters.reportType);
+    if (filters.startDate) params.append('startDate', filters.startDate);
+    if (filters.endDate) params.append('endDate', filters.endDate);
+    if (filters.propertyId && filters.propertyId !== 'ALL') params.append('propertyId', filters.propertyId);
+    if (filters.tenantId && filters.tenantId !== 'ALL') params.append('tenantId', filters.tenantId);
+    if (filters.centerId && filters.centerId !== 'ALL') params.append('centerId', filters.centerId);
+    if (filters.cashBoxId && filters.cashBoxId !== 'ALL') params.append('cashBoxId', filters.cashBoxId);
+    if (filters.paymentMethod && filters.paymentMethod !== 'ALL') params.append('paymentMethod', filters.paymentMethod);
+
+    const res = await safeFetch(`${API_BASE}/collections/reports?${params.toString()}`);
+    if (!res.ok) throw new Error('فشل تحميل تقارير التحصيل من MySQL');
+    return await res.json();
+  },
+
+  async getAuditLogs(entity?: string, limit: number = 200): Promise<any[]> {
+    const params = new URLSearchParams();
+    if (entity) params.append('entity', entity);
+    params.append('limit', limit.toString());
+    const res = await safeFetch(`${API_BASE}/audit-logs?${params.toString()}`);
+    if (!res.ok) return [];
+    return await res.json();
+  },
+
+  // 13. Statements & General Ledger Module
+  async getStatementsDashboard(): Promise<any> {
+    const res = await safeFetch(`${API_BASE}/statements/dashboard`);
+    if (!res.ok) throw new Error('فشل تحميل ملخص كشوفات الحسابات');
+    return await res.json();
+  },
+
+  async getTenantStatement(tenantId: string, filters: {
+    propertyId?: string;
+    unitId?: string;
+    contractId?: string;
+    accountType?: string;
+    dateFrom?: string;
+    dateTo?: string;
+    status?: string;
+    sourceModule?: string;
+    search?: string;
+  }): Promise<any> {
+    const params = new URLSearchParams();
+    if (filters.propertyId && filters.propertyId !== 'ALL') params.append('propertyId', filters.propertyId);
+    if (filters.unitId && filters.unitId !== 'ALL') params.append('unitId', filters.unitId);
+    if (filters.contractId && filters.contractId !== 'ALL') params.append('contractId', filters.contractId);
+    if (filters.accountType && filters.accountType !== 'ALL') params.append('accountType', filters.accountType);
+    if (filters.dateFrom) params.append('dateFrom', filters.dateFrom);
+    if (filters.dateTo) params.append('dateTo', filters.dateTo);
+    if (filters.status && filters.status !== 'ALL') params.append('status', filters.status);
+    if (filters.sourceModule && filters.sourceModule !== 'ALL') params.append('sourceModule', filters.sourceModule);
+    if (filters.search) params.append('search', filters.search);
+
+    const res = await safeFetch(`${API_BASE}/statements/tenant/${tenantId}?${params.toString()}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'فشل تحميل كشف حساب المستأجر');
+    }
+    return await res.json();
+  },
+
+  async getPropertyStatement(propertyId: string, filters: {
+    dateFrom?: string;
+    dateTo?: string;
+    accountType?: string;
+    tenantId?: string;
+    unitId?: string;
+    search?: string;
+  }): Promise<any> {
+    const params = new URLSearchParams();
+    if (filters.dateFrom) params.append('dateFrom', filters.dateFrom);
+    if (filters.dateTo) params.append('dateTo', filters.dateTo);
+    if (filters.accountType && filters.accountType !== 'ALL') params.append('accountType', filters.accountType);
+    if (filters.tenantId && filters.tenantId !== 'ALL') params.append('tenantId', filters.tenantId);
+    if (filters.unitId && filters.unitId !== 'ALL') params.append('unitId', filters.unitId);
+    if (filters.search) params.append('search', filters.search);
+
+    const res = await safeFetch(`${API_BASE}/statements/property/${propertyId}?${params.toString()}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'فشل تحميل كشف حساب العقار');
+    }
+    return await res.json();
+  },
+
+  async getUnitStatement(unitId: string, filters: {
+    dateFrom?: string;
+    dateTo?: string;
+    accountType?: string;
+    tenantId?: string;
+  }): Promise<any> {
+    const params = new URLSearchParams();
+    if (filters.dateFrom) params.append('dateFrom', filters.dateFrom);
+    if (filters.dateTo) params.append('dateTo', filters.dateTo);
+    if (filters.accountType && filters.accountType !== 'ALL') params.append('accountType', filters.accountType);
+    if (filters.tenantId && filters.tenantId !== 'ALL') params.append('tenantId', filters.tenantId);
+
+    const res = await safeFetch(`${API_BASE}/statements/unit/${unitId}?${params.toString()}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'فشل تحميل كشف حساب الوحدة');
+    }
+    return await res.json();
+  },
+
+  async getInvoicesStatement(filters: {
+    propertyId?: string;
+    tenantId?: string;
+    unitId?: string;
+    accountType?: string;
+    status?: string;
+    dateFrom?: string;
+    dateTo?: string;
+    search?: string;
+    page?: number;
+    limit?: number;
+  }): Promise<any> {
+    const params = new URLSearchParams();
+    if (filters.propertyId && filters.propertyId !== 'ALL') params.append('propertyId', filters.propertyId);
+    if (filters.tenantId && filters.tenantId !== 'ALL') params.append('tenantId', filters.tenantId);
+    if (filters.unitId && filters.unitId !== 'ALL') params.append('unitId', filters.unitId);
+    if (filters.accountType && filters.accountType !== 'ALL') params.append('accountType', filters.accountType);
+    if (filters.status && filters.status !== 'ALL') params.append('status', filters.status);
+    if (filters.dateFrom) params.append('dateFrom', filters.dateFrom);
+    if (filters.dateTo) params.append('dateTo', filters.dateTo);
+    if (filters.search) params.append('search', filters.search);
+    if (filters.page) params.append('page', filters.page.toString());
+    if (filters.limit) params.append('limit', filters.limit.toString());
+
+    const res = await safeFetch(`${API_BASE}/statements/invoices?${params.toString()}`);
+    if (!res.ok) throw new Error('فشل تحميل كشف الفواتير');
+    return await res.json();
+  },
+
+  async getReceivablesStatement(filters: {
+    propertyId?: string;
+    tenantId?: string;
+    unitId?: string;
+    accountType?: string;
+    agingBucket?: string;
+    dateFrom?: string;
+    dateTo?: string;
+    search?: string;
+  }): Promise<any> {
+    const params = new URLSearchParams();
+    if (filters.propertyId && filters.propertyId !== 'ALL') params.append('propertyId', filters.propertyId);
+    if (filters.tenantId && filters.tenantId !== 'ALL') params.append('tenantId', filters.tenantId);
+    if (filters.unitId && filters.unitId !== 'ALL') params.append('unitId', filters.unitId);
+    if (filters.accountType && filters.accountType !== 'ALL') params.append('accountType', filters.accountType);
+    if (filters.agingBucket && filters.agingBucket !== 'ALL') params.append('agingBucket', filters.agingBucket);
+    if (filters.dateFrom) params.append('dateFrom', filters.dateFrom);
+    if (filters.dateTo) params.append('dateTo', filters.dateTo);
+    if (filters.search) params.append('search', filters.search);
+
+    const res = await safeFetch(`${API_BASE}/statements/receivables?${params.toString()}`);
+    if (!res.ok) throw new Error('فشل تحميل كشف الذمم المدينة والأعمار');
+    return await res.json();
+  },
+
+  async getCollectionsStatement(filters: {
+    cashBoxId?: string;
+    centerId?: string;
+    paymentMethod?: string;
+    status?: string;
+    accountType?: string;
+    dateFrom?: string;
+    dateTo?: string;
+    search?: string;
+  }): Promise<any> {
+    const params = new URLSearchParams();
+    if (filters.cashBoxId && filters.cashBoxId !== 'ALL') params.append('cashBoxId', filters.cashBoxId);
+    if (filters.centerId && filters.centerId !== 'ALL') params.append('centerId', filters.centerId);
+    if (filters.paymentMethod && filters.paymentMethod !== 'ALL') params.append('paymentMethod', filters.paymentMethod);
+    if (filters.status && filters.status !== 'ALL') params.append('status', filters.status);
+    if (filters.accountType && filters.accountType !== 'ALL') params.append('accountType', filters.accountType);
+    if (filters.dateFrom) params.append('dateFrom', filters.dateFrom);
+    if (filters.dateTo) params.append('dateTo', filters.dateTo);
+    if (filters.search) params.append('search', filters.search);
+
+    const res = await safeFetch(`${API_BASE}/statements/collections?${params.toString()}`);
+    if (!res.ok) throw new Error('فشل تحميل حركة وسندات التحصيل');
+    return await res.json();
+  },
+
+  async getGeneralLedger(filters: {
+    accountType?: string;
+    sourceModule?: string;
+    reference?: string;
+    status?: string;
+    propertyId?: string;
+    tenantId?: string;
+    dateFrom?: string;
+    dateTo?: string;
+    search?: string;
+    page?: number;
+    limit?: number;
+  }): Promise<any> {
+    const params = new URLSearchParams();
+    if (filters.accountType && filters.accountType !== 'ALL') params.append('accountType', filters.accountType);
+    if (filters.sourceModule && filters.sourceModule !== 'ALL') params.append('sourceModule', filters.sourceModule);
+    if (filters.status && filters.status !== 'ALL') params.append('status', filters.status);
+    if (filters.reference) params.append('reference', filters.reference);
+    if (filters.propertyId && filters.propertyId !== 'ALL') params.append('propertyId', filters.propertyId);
+    if (filters.tenantId && filters.tenantId !== 'ALL') params.append('tenantId', filters.tenantId);
+    if (filters.dateFrom) params.append('dateFrom', filters.dateFrom);
+    if (filters.dateTo) params.append('dateTo', filters.dateTo);
+    if (filters.search) params.append('search', filters.search);
+    if (filters.page) params.append('page', filters.page.toString());
+    if (filters.limit) params.append('limit', filters.limit.toString());
+
+    const res = await safeFetch(`${API_BASE}/statements/general-ledger?${params.toString()}`);
+    if (!res.ok) throw new Error('فشل تحميل دفتر الأستاذ العام');
+    return await res.json();
+  },
+
+  async getAccountBalances(): Promise<any> {
+    const res = await safeFetch(`${API_BASE}/statements/account-balances`);
+    if (!res.ok) throw new Error('فشل تحميل أرصدة الحسابات');
+    return await res.json();
+  },
+
+  async getTransactionDetails(id: string): Promise<any> {
+    const res = await safeFetch(`${API_BASE}/statements/transaction/${id}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'فشل تحميل تفاصيل الحركة المالية');
+    }
+    return await res.json();
   }
 };
+
+export const api = ERP_API;
+export default ERP_API;

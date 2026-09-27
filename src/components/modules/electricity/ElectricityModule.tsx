@@ -18,6 +18,7 @@ import {
   User, 
   Calendar,
   RotateCcw,
+  Ban,
   Edit2,
   Trash2,
   ArrowRight,
@@ -1614,6 +1615,47 @@ export const ElectricityModule: React.FC<Props> = ({
         onClose={() => setInvoiceToPrint(null)}
         invoice={invoiceToPrint}
       />
+
+      {readingToPost && (
+        <ElectricityPostingModal
+          isOpen={Boolean(readingToPost)}
+          onClose={() => setReadingToPost(null)}
+          onSuccess={(generatedInvoice) => {
+            loadAllData();
+            if (onRefreshGlobalStats) onRefreshGlobalStats();
+            if (generatedInvoice) {
+              setInvoiceToPrint(generatedInvoice);
+            }
+          }}
+          reading={readingToPost}
+        />
+      )}
+
+      {readingToDelete && (
+        <DeleteReadingModal
+          isOpen={Boolean(readingToDelete)}
+          onClose={() => setReadingToDelete(null)}
+          onSuccess={() => {
+            loadAllData();
+            if (onRefreshGlobalStats) onRefreshGlobalStats();
+          }}
+          reading={readingToDelete}
+          onNavigateToBilling={() => setActiveSubTab('billing')}
+        />
+      )}
+
+      {invoiceToCancelOrReverse && (
+        <CancelOrReverseInvoiceModal
+          isOpen={Boolean(invoiceToCancelOrReverse)}
+          onClose={() => setInvoiceToCancelOrReverse(null)}
+          onSuccess={() => {
+            loadAllData();
+            if (onRefreshGlobalStats) onRefreshGlobalStats();
+          }}
+          invoice={invoiceToCancelOrReverse.invoice}
+          mode={invoiceToCancelOrReverse.mode}
+        />
+      )}
 
     </div>
   );

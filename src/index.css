@@ -60,6 +60,51 @@
     display: none !important;
   }
 
+  /* When printing statement / General Ledger / Financial reports */
+  body.is-printing-statement aside,
+  body.is-printing-statement header,
+  body.is-printing-statement nav,
+  body.is-printing-statement main,
+  body.is-printing-statement button,
+  body.is-printing-statement .print\:hidden {
+    display: none !important;
+  }
+
+  body.is-printing-statement .statement-modal-overlay {
+    position: static !important;
+    background: transparent !important;
+    backdrop-filter: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    inset: auto !important;
+    overflow: visible !important;
+    display: block !important;
+    width: 100% !important;
+    height: auto !important;
+    max-height: none !important;
+    box-shadow: none !important;
+  }
+
+  body.is-printing-statement .statement-modal-card {
+    position: static !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    max-height: none !important;
+    border: none !important;
+    box-shadow: none !important;
+    background: #ffffff !important;
+    overflow: visible !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  body.is-printing-statement .statement-printable-sheet {
+    padding: 0 !important;
+    margin: 0 !important;
+    overflow: visible !important;
+    width: 100% !important;
+  }
+
   /* Make sure modal overlays do not block or darken printed page */
   .invoice-modal-overlay {
     position: static !important;
@@ -93,8 +138,19 @@
     width: 100% !important;
   }
 
-  /* Prevent page breaks inside tables and summary blocks */
+  /* Repeat table headers on additional pages and prevent page breaks inside rows */
+  table thead {
+    display: table-header-group !important;
+  }
+  table tfoot {
+    display: table-footer-group !important;
+  }
   table, tr, td, th {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
+  .print-avoid-break {
     page-break-inside: avoid !important;
     break-inside: avoid !important;
   }

@@ -18,8 +18,6 @@ export const MeterModal: React.FC<Props> = ({
   meterToEdit,
   properties
 }) => {
-  if (!isOpen) return null;
-
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -95,6 +93,8 @@ export const MeterModal: React.FC<Props> = ({
 
     loadPropertyUnits();
   }, [propertyId]);
+
+  if (!isOpen) return null;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

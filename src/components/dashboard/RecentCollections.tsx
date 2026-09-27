@@ -14,11 +14,13 @@ import { PaymentReceipt } from '../../types/erp';
 interface RecentCollectionsProps {
   receipts: PaymentReceipt[];
   onPrintReceipt: (receipt: PaymentReceipt) => void;
+  onManageAll?: () => void;
 }
 
 export const RecentCollections: React.FC<RecentCollectionsProps> = ({
   receipts,
   onPrintReceipt,
+  onManageAll,
 }) => {
   const formatMoney = (amount: number) => {
     return new Intl.NumberFormat('ar-YE').format(amount);
@@ -68,6 +70,16 @@ export const RecentCollections: React.FC<RecentCollectionsProps> = ({
             سندات تحصيل رسمية مزودة برمز استجابة سريعة QR وتفاصيل المحصل
           </p>
         </div>
+
+        {onManageAll && (
+          <button
+            onClick={onManageAll}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-lg text-xs font-bold transition-all cursor-pointer"
+          >
+            <span>مركز التحصيل وسندات القبض</span>
+            <span>←</span>
+          </button>
+        )}
       </div>
 
       {/* Receipts List Table */}

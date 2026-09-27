@@ -28,8 +28,6 @@ export const CancelOrReverseInvoiceModal: React.FC<Props> = ({
   invoice,
   mode
 }) => {
-  if (!isOpen || !invoice) return null;
-
   const isReverse = mode === 'REVERSE';
   const defaultReason = isReverse 
     ? 'عكس ترحيل فاتورة كهرباء وإلغاء الأثر المالي على ذمة المستأجر'
@@ -39,6 +37,8 @@ export const CancelOrReverseInvoiceModal: React.FC<Props> = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+
+  if (!isOpen || !invoice) return null;
 
   // Check state
   const isCancelled = invoice.status === 'CANCELLED';
