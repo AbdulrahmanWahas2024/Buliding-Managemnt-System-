@@ -10007,9 +10007,15 @@ router.get('/statements/account-balances', async (req: Request, res: Response) =
       FROM payments
       WHERE payment_method = 'CASH' AND status = 'COMPLETED'
     `);
+    const [cashExpenseRows]: any = await pool.query(`
+      SELECT COALESCE(SUM(amount), 0) AS cash_expenses
+      FROM expenses
+      WHERE payment_method = 'CASH' AND status = 'POSTED'
+    `);
     const boxOpening = Number(boxRows[0]?.total_opening || 0);
     const boxCurrent = Number(boxRows[0]?.total_current || 0);
     const boxCashIn = Number(cashCollectedRows[0]?.cash_collected || 0);
+    const boxCashOut = Number(cashExpenseRows[0]?.cash_expenses || 0);
 
     // 5. Tenant Security Deposits (2101)
     const [depRows]: any = await pool.query(`
@@ -10043,6 +10049,18 @@ router.get('/statements/account-balances', async (req: Request, res: Response) =
     `);
     const waterRevenue = Number(waterRevRows[0]?.water_rev || 0);
 
+    // 9. Operational & Maintenance Expenses (5101)
+    const [expRows]: any = await pool.query(`
+      SELECT 
+        COALESCE(SUM(debit), 0) AS exp_debits,
+        COALESCE(SUM(credit), 0) AS exp_credits
+      FROM tenant_ledger
+      WHERE account_type = 'EXPENSE' AND status = 'POSTED'
+    `);
+    const expDebit = Number(expRows[0]?.exp_debits || 0);
+    const expCredit = Number(expRows[0]?.exp_credits || 0);
+    const expClosing = expDebit - expCredit;
+
     const accounts = [
       {
         accountCode: '1101',
@@ -10051,7 +10069,7 @@ router.get('/statements/account-balances', async (req: Request, res: Response) =
         nature: 'DEBIT',
         openingBalance: boxOpening,
         debitTotal: boxCashIn,
-        creditTotal: 0,
+        creditTotal: boxCashOut,
         closingBalance: boxCurrent,
         notes: 'الرصيد الفعلي الحالي المتوفر في الصناديق الخزنية المعتمدة'
       },
@@ -10131,6 +10149,17 @@ router.get('/statements/account-balances', async (req: Request, res: Response) =
         creditTotal: waterRevenue,
         closingBalance: waterRevenue,
         notes: 'إجمالي التكاليف الموزعة والمفوترة لاستهلاك المياه'
+      },
+      {
+        accountCode: '5101',
+        accountName: 'مصروفات التشغيل والصيانة والإصلاحات',
+        category: 'مصروفات تشغيلية (تكاليف)',
+        nature: 'DEBIT',
+        openingBalance: 0,
+        debitTotal: expDebit,
+        creditTotal: expCredit,
+        closingBalance: expClosing,
+        notes: 'إجمالي المصروفات التشغيلية وسندات الصيانة والإصلاحات المرحلة رسمياً بدفتر الأستاذ'
       }
     ];
 
@@ -10168,6 +10197,10 @@ router.get('/statements/transaction/:id', async (req: Request, res: Response) =>
         u.unit_number AS unit_number_live, u.type AS unit_type,
         i.invoice_number, i.total_amount AS invoice_total, i.paid_amount AS invoice_paid, i.remaining_amount AS invoice_remaining, i.status AS invoice_status, i.period_month,
         pay.receipt_number, pay.payment_method, pay.collector_name, pay.status AS payment_status, pay.cancellation_reason, pay.reversal_reason, pay.qr_code_content,
+        exp.id AS expense_id, exp.expense_number, exp.category_name AS expense_category_name, exp.account_code AS expense_account_code,
+        exp.amount AS expense_amount, exp.payment_method AS expense_payment_method, exp.cash_box_name AS expense_cash_box_name,
+        exp.vendor_name AS expense_vendor_name, mnt.maintenance_number AS expense_maintenance_number, exp.status AS expense_status,
+        exp.posted_by AS expense_posted_by, exp.posted_at AS expense_posted_at,
         u_user.name AS created_by_name
       FROM tenant_ledger l
       LEFT JOIN tenants t ON l.tenant_id = t.id
@@ -10175,6 +10208,8 @@ router.get('/statements/transaction/:id', async (req: Request, res: Response) =>
       LEFT JOIN units u ON l.unit_id = u.id
       LEFT JOIN invoices i ON l.invoice_id = i.id OR l.reference = i.invoice_number
       LEFT JOIN payments pay ON l.payment_id = pay.id OR l.reference = pay.receipt_number
+      LEFT JOIN expenses exp ON l.reference = exp.expense_number OR l.id = exp.ledger_id OR l.reference = CONCAT('REV-', exp.expense_number)
+      LEFT JOIN maintenance_requests mnt ON exp.maintenance_id = mnt.id
       LEFT JOIN users u_user ON l.user_id = u_user.id
       WHERE l.id = ?
     `, [id]);
@@ -10263,11 +10298,33 @@ router.get('/statements/transaction/:id', async (req: Request, res: Response) =>
         reversalReason: r.reversal_reason,
         qrCodeContent: r.qr_code_content
       } : null,
+      linkedExpense: r.expense_number ? {
+        id: r.expense_id,
+        expenseNumber: r.expense_number,
+        categoryName: r.expense_category_name,
+        accountCode: r.expense_account_code,
+        amount: Number(r.expense_amount || 0),
+        paymentMethod: r.expense_payment_method,
+        cashBoxName: r.expense_cash_box_name,
+        vendorName: r.expense_vendor_name,
+        maintenanceNumber: r.expense_maintenance_number,
+        status: r.expense_status,
+        postedBy: r.expense_posted_by,
+        postedAt: r.expense_posted_at
+      } : null,
       linkedTransaction
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
+
+// 14. Expenses and Maintenance Module Router
+import expensesRouter from './expensesApi';
+router.use(expensesRouter);
+
+// 15. Reports Module Router
+import reportsRouter from './reportsApi';
+router.use(reportsRouter);
 
 export default router;

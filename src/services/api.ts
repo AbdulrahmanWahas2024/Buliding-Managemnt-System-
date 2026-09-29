@@ -1774,6 +1774,336 @@ export const ERP_API = {
       throw new Error(err.error || 'فشل تحميل تفاصيل الحركة المالية');
     }
     return await res.json();
+  },
+
+  // 14. EXPENSES & MAINTENANCE MODULE API
+  // Categories
+  async getExpenseCategories(activeOnly = false): Promise<any[]> {
+    const res = await safeFetch(`${API_BASE}/expenses/categories${activeOnly ? '?activeOnly=true' : ''}`);
+    if (!res.ok) throw new Error('فشل جلب تصنيفات المصروفات من قاعدة البيانات');
+    return await res.json();
+  },
+
+  async createExpenseCategory(data: { code?: string; name: string; accountCode?: string; description?: string; isActive?: boolean }): Promise<any> {
+    const res = await safeFetch(`${API_BASE}/expenses/categories`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'تعذر إضافة تصنيف المصروفات');
+    }
+    return await res.json();
+  },
+
+  async updateExpenseCategory(id: string, data: { name: string; accountCode?: string; description?: string; isActive?: boolean }): Promise<any> {
+    const res = await safeFetch(`${API_BASE}/expenses/categories/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'تعذر تعديل تصنيف المصروفات');
+    }
+    return await res.json();
+  },
+
+  async toggleExpenseCategory(id: string): Promise<any> {
+    const res = await safeFetch(`${API_BASE}/expenses/categories/${id}/toggle`, {
+      method: 'PATCH',
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'تعذر تغيير حالة التصنيف');
+    }
+    return await res.json();
+  },
+
+  async deleteExpenseCategory(id: string): Promise<any> {
+    const res = await safeFetch(`${API_BASE}/expenses/categories/${id}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'تعذر حذف التصنيف');
+    }
+    return await res.json();
+  },
+
+  // Vendors
+  async getVendors(filters?: { type?: string; activeOnly?: boolean; search?: string }): Promise<any[]> {
+    const params = new URLSearchParams();
+    if (filters?.type && filters.type !== 'ALL') params.append('type', filters.type);
+    if (filters?.activeOnly) params.append('activeOnly', 'true');
+    if (filters?.search) params.append('search', filters.search);
+
+    const res = await safeFetch(`${API_BASE}/vendors?${params.toString()}`);
+    if (!res.ok) throw new Error('فشل جلب قائمة الموردين والفنيين');
+    return await res.json();
+  },
+
+  async createVendor(data: any): Promise<any> {
+    const res = await safeFetch(`${API_BASE}/vendors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'تعذر إضافة المورد/الفني');
+    }
+    return await res.json();
+  },
+
+  async updateVendor(id: string, data: any): Promise<any> {
+    const res = await safeFetch(`${API_BASE}/vendors/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'تعذر تعديل بيانات المورد');
+    }
+    return await res.json();
+  },
+
+  async deleteVendor(id: string): Promise<any> {
+    const res = await safeFetch(`${API_BASE}/vendors/${id}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'تعذر حذف المورد');
+    }
+    return await res.json();
+  },
+
+  // Maintenance Requests
+  async getMaintenanceRequests(filters?: any): Promise<{ totalCount: number; page: number; limit: number; items: any[] }> {
+    const params = new URLSearchParams();
+    if (filters?.propertyId && filters.propertyId !== 'ALL') params.append('propertyId', filters.propertyId);
+    if (filters?.buildingId && filters.buildingId !== 'ALL') params.append('buildingId', filters.buildingId);
+    if (filters?.unitId && filters.unitId !== 'ALL') params.append('unitId', filters.unitId);
+    if (filters?.vendorId && filters.vendorId !== 'ALL') params.append('vendorId', filters.vendorId);
+    if (filters?.status && filters.status !== 'ALL') params.append('status', filters.status);
+    if (filters?.priority && filters.priority !== 'ALL') params.append('priority', filters.priority);
+    if (filters?.dateFrom) params.append('dateFrom', filters.dateFrom);
+    if (filters?.dateTo) params.append('dateTo', filters.dateTo);
+    if (filters?.search) params.append('search', filters.search);
+    if (filters?.page) params.append('page', filters.page.toString());
+    if (filters?.limit) params.append('limit', filters.limit.toString());
+
+    const res = await safeFetch(`${API_BASE}/maintenance?${params.toString()}`);
+    if (!res.ok) throw new Error('فشل جلب طلبات الصيانة من قاعدة البيانات');
+    return await res.json();
+  },
+
+  async getMaintenanceStats(filters?: any): Promise<any> {
+    const params = new URLSearchParams();
+    if (filters?.propertyId && filters.propertyId !== 'ALL') params.append('propertyId', filters.propertyId);
+    if (filters?.dateFrom) params.append('dateFrom', filters.dateFrom);
+    if (filters?.dateTo) params.append('dateTo', filters.dateTo);
+
+    const res = await safeFetch(`${API_BASE}/maintenance/stats?${params.toString()}`);
+    if (!res.ok) throw new Error('فشل جلب إحصائيات الصيانة');
+    return await res.json();
+  },
+
+  async getMaintenanceDetails(id: string): Promise<any> {
+    const res = await safeFetch(`${API_BASE}/maintenance/${id}`);
+    if (!res.ok) throw new Error('فشل جلب تفاصيل طلب الصيانة');
+    return await res.json();
+  },
+
+  async createMaintenanceRequest(data: any): Promise<any> {
+    const res = await safeFetch(`${API_BASE}/maintenance`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'تعذر تسجيل طلب الصيانة');
+    }
+    return await res.json();
+  },
+
+  async updateMaintenanceStatus(id: string, data: { status: string; notes?: string; actualCost?: number; completionDate?: string }): Promise<any> {
+    const res = await safeFetch(`${API_BASE}/maintenance/${id}/status`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'تعذر تحديث حالة الصيانة');
+    }
+    return await res.json();
+  },
+
+  async createExpenseFromMaintenance(id: string, data: any): Promise<any> {
+    const res = await safeFetch(`${API_BASE}/maintenance/${id}/create-expense`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'تعذر إصدار المصروف من طلب الصيانة');
+    }
+    return await res.json();
+  },
+
+  // Expenses
+  async getExpenses(filters?: any): Promise<{ totalCount: number; totalAmount: number; page: number; limit: number; items: any[] }> {
+    const params = new URLSearchParams();
+    if (filters?.propertyId && filters.propertyId !== 'ALL') params.append('propertyId', filters.propertyId);
+    if (filters?.categoryId && filters.categoryId !== 'ALL') params.append('categoryId', filters.categoryId);
+    if (filters?.status && filters.status !== 'ALL') params.append('status', filters.status);
+    if (filters?.paymentMethod && filters.paymentMethod !== 'ALL') params.append('paymentMethod', filters.paymentMethod);
+    if (filters?.cashBoxId && filters.cashBoxId !== 'ALL') params.append('cashBoxId', filters.cashBoxId);
+    if (filters?.vendorId && filters.vendorId !== 'ALL') params.append('vendorId', filters.vendorId);
+    if (filters?.dateFrom) params.append('dateFrom', filters.dateFrom);
+    if (filters?.dateTo) params.append('dateTo', filters.dateTo);
+    if (filters?.search) params.append('search', filters.search);
+    if (filters?.page) params.append('page', filters.page.toString());
+    if (filters?.limit) params.append('limit', filters.limit.toString());
+
+    const res = await safeFetch(`${API_BASE}/expenses?${params.toString()}`);
+    if (!res.ok) throw new Error('فشل جلب قائمة المصروفات من قاعدة البيانات');
+    return await res.json();
+  },
+
+  async getExpensesDashboard(filters?: any): Promise<any> {
+    const params = new URLSearchParams();
+    if (filters?.propertyId && filters.propertyId !== 'ALL') params.append('propertyId', filters.propertyId);
+    if (filters?.dateFrom) params.append('dateFrom', filters.dateFrom);
+    if (filters?.dateTo) params.append('dateTo', filters.dateTo);
+
+    const res = await safeFetch(`${API_BASE}/expenses/dashboard?${params.toString()}`);
+    if (!res.ok) throw new Error('فشل تحميل مؤشرات لوحة المصروفات');
+    return await res.json();
+  },
+
+  async getExpenseDetails(id: string): Promise<any> {
+    const res = await safeFetch(`${API_BASE}/expenses/${id}`);
+    if (!res.ok) throw new Error('فشل جلب تفاصيل سند المصروف');
+    return await res.json();
+  },
+
+  async createExpense(data: any): Promise<any> {
+    const res = await safeFetch(`${API_BASE}/expenses`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'تعذر حفظ سند المصروف');
+    }
+    return await res.json();
+  },
+
+  async updateExpense(id: string, data: any): Promise<any> {
+    const res = await safeFetch(`${API_BASE}/expenses/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'تعذر تعديل المصروف');
+    }
+    return await res.json();
+  },
+
+  async deleteExpense(id: string): Promise<any> {
+    const res = await safeFetch(`${API_BASE}/expenses/${id}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'تعذر حذف المصروف');
+    }
+    return await res.json();
+  },
+
+  async approveExpense(id: string): Promise<any> {
+    const res = await safeFetch(`${API_BASE}/expenses/${id}/approve`, {
+      method: 'POST',
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'تعذر اعتماد المصروف');
+    }
+    return await res.json();
+  },
+
+  async postExpense(id: string, cashBoxId?: string): Promise<any> {
+    const res = await safeFetch(`${API_BASE}/expenses/${id}/post`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cashBoxId }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'تعذر الترحيل المالي للمصروف');
+    }
+    return await res.json();
+  },
+
+  async cancelExpense(id: string, reason: string): Promise<any> {
+    const res = await safeFetch(`${API_BASE}/expenses/${id}/cancel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'تعذر إلغاء المصروف');
+    }
+    return await res.json();
+  },
+
+  async reverseExpense(id: string, reversalReason: string): Promise<any> {
+    const res = await safeFetch(`${API_BASE}/expenses/${id}/reverse`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reversalReason }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'تعذر عكس قيد المصروف دفترياً');
+    }
+    return await res.json();
+  },
+
+  // ==========================================================================
+  // 15. Real MySQL Reports Module Services
+  // ==========================================================================
+  async getReportsDashboard(): Promise<any> {
+    const res = await safeFetch(`${API_BASE}/reports/dashboard`);
+    if (!res.ok) throw new Error('فشل تحميل مؤشرات مركز التقارير');
+    return await res.json();
+  },
+
+  async getReportsData(endpoint: string, paramsObj: Record<string, any> = {}): Promise<any> {
+    const query = new URLSearchParams();
+    Object.entries(paramsObj).forEach(([key, val]) => {
+      if (val !== undefined && val !== null && val !== '' && val !== 'ALL') {
+        query.append(key, String(val));
+      }
+    });
+    const qs = query.toString() ? `?${query.toString()}` : '';
+    const res = await safeFetch(`${API_BASE}/reports/${endpoint}${qs}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `فشل تحميل بيانات التقرير: ${endpoint}`);
+    }
+    return await res.json();
   }
 };
 

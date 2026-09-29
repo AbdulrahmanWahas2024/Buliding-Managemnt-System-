@@ -684,3 +684,142 @@ export interface CollectionDashboardStats {
     totalAmount: number;
   }>;
 }
+
+// -------------------------------------------------------------
+// EXPENSES & MAINTENANCE TYPES
+// -------------------------------------------------------------
+
+export interface ExpenseCategory {
+  id: string;
+  code: string;
+  name: string;
+  accountCode: string;
+  description?: string;
+  isActive: boolean;
+  createdAt?: string;
+}
+
+export type VendorType = 'TECHNICIAN' | 'CONTRACTOR' | 'SUPPLIER' | 'MAINTENANCE_COMPANY' | 'OTHER';
+
+export interface Vendor {
+  id: string;
+  code: string;
+  name: string;
+  type: VendorType;
+  phone?: string;
+  address?: string;
+  taxId?: string;
+  notes?: string;
+  isActive: boolean;
+  createdAt?: string;
+}
+
+export type MaintenancePriority = 'LOW' | 'MEDIUM' | 'HIGH' | 'URGENT';
+export type MaintenanceStatus = 'NEW' | 'REVIEW' | 'APPROVED' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED';
+
+export interface MaintenanceRequest {
+  id: string;
+  maintenanceNumber: string;
+  requestDate: string;
+  propertyId?: string;
+  propertyName?: string;
+  buildingId?: string;
+  buildingName?: string;
+  unitId?: string;
+  unitNumber?: string;
+  tenantId?: string;
+  tenantName?: string;
+  categoryId?: string;
+  categoryName?: string;
+  requesterName: string;
+  requesterPhone?: string;
+  problemDescription: string;
+  priority: MaintenancePriority;
+  vendorId?: string;
+  vendorName?: string;
+  assignedTo?: string;
+  expectedCost: number;
+  actualCost: number;
+  startDate?: string;
+  completionDate?: string;
+  status: MaintenanceStatus;
+  notes?: string;
+  attachments?: string[];
+  expenseId?: string;
+  createdBy: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export type ExpenseStatus = 'DRAFT' | 'APPROVED' | 'POSTED' | 'CANCELLED' | 'REVERSED';
+export type ExpensePaymentMethod = 'CASH' | 'BANK_TRANSFER' | 'CHECK' | 'CASH_BOX';
+
+export interface Expense {
+  id: string;
+  expenseNumber: string;
+  expenseDate: string;
+  categoryId: string;
+  categoryName: string;
+  accountCode: string;
+  description: string;
+  amount: number;
+  currency: string;
+  paymentMethod: ExpensePaymentMethod;
+  cashBoxId?: string;
+  cashBoxName?: string;
+  bankName?: string;
+  checkNumber?: string;
+  transferReference?: string;
+  propertyId?: string;
+  propertyName?: string;
+  buildingId?: string;
+  buildingName?: string;
+  unitId?: string;
+  unitNumber?: string;
+  maintenanceId?: string;
+  maintenanceNumber?: string;
+  vendorId?: string;
+  vendorName?: string;
+  status: ExpenseStatus;
+  approvedBy?: string;
+  approvedAt?: string;
+  postedBy?: string;
+  postedAt?: string;
+  ledgerId?: string;
+  cancelledBy?: string;
+  cancelledAt?: string;
+  cancellationReason?: string;
+  reversedBy?: string;
+  reversedAt?: string;
+  reversalReason?: string;
+  reversalExpenseId?: string;
+  reversalLedgerId?: string;
+  attachments?: string[];
+  notes?: string;
+  createdBy: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface ExpenseDashboardStats {
+  totalExpenses: number;
+  monthExpenses: number;
+  maintenanceExpenses: number;
+  paidPostedExpenses: number;
+  approvedExpenses: number;
+  draftExpenses: number;
+  expensesCount: number;
+  byProperty: Array<{
+    propertyId: string;
+    propertyName: string;
+    amount: number;
+    count: number;
+  }>;
+  byCategory: Array<{
+    categoryId: string;
+    categoryName: string;
+    amount: number;
+    count: number;
+  }>;
+}
+

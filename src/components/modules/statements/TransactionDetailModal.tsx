@@ -45,6 +45,8 @@ export const TransactionDetailModal: React.FC<TransactionDetailModalProps> = ({
         return <span className="px-2.5 py-1 bg-cyan-100 text-cyan-800 rounded-md text-xs font-bold">مياه ووايتات</span>;
       case 'DEPOSIT':
         return <span className="px-2.5 py-1 bg-purple-100 text-purple-800 rounded-md text-xs font-bold">تأمين وضمان</span>;
+      case 'EXPENSE':
+        return <span className="px-2.5 py-1 bg-rose-100 text-rose-800 rounded-md text-xs font-bold">مصروفات وتشغيل (5101)</span>;
       default:
         return <span className="px-2.5 py-1 bg-slate-100 text-slate-800 rounded-md text-xs font-bold">{type}</span>;
     }
@@ -60,6 +62,8 @@ export const TransactionDetailModal: React.FC<TransactionDetailModalProps> = ({
         return <span className="px-2.5 py-1 bg-amber-100 text-amber-800 rounded-md text-xs font-bold">فوترة استهلاك كهرباء</span>;
       case 'WATER':
         return <span className="px-2.5 py-1 bg-cyan-100 text-cyan-800 rounded-md text-xs font-bold">توزيع تكاليف مياه</span>;
+      case 'EXPENSES':
+        return <span className="px-2.5 py-1 bg-rose-100 text-rose-800 rounded-md text-xs font-bold">سند صرف مصروفات تشغيلية</span>;
       case 'REVERSAL':
         return <span className="px-2.5 py-1 bg-rose-100 text-rose-800 rounded-md text-xs font-bold">عكس قيد / إلغاء سند</span>;
       case 'OPENING_BALANCE':
@@ -286,6 +290,57 @@ export const TransactionDetailModal: React.FC<TransactionDetailModalProps> = ({
                       </span>
                     </div>
                   </div>
+                </div>
+              )}
+
+              {/* Linked Expense Voucher Info if exists */}
+              {data.linkedExpense && (
+                <div className="p-4 bg-rose-50/70 border border-rose-200 rounded-xl space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <FileText className="w-4 h-4 text-rose-700" />
+                      <h4 className="text-xs font-bold text-rose-900">سند صرف المصروف المرتبط بهذا القيد</h4>
+                    </div>
+                    <span className="px-2 py-0.5 bg-rose-100 text-rose-800 rounded text-[11px] font-bold">
+                      {data.linkedExpense.status === 'POSTED' ? 'مرحّل معتمد للأستاذ' : data.linkedExpense.status}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs pt-1">
+                    <div className="bg-white p-2 rounded border border-rose-100">
+                      <span className="text-slate-500 block">رقم سند المصروف:</span>
+                      <span className="font-mono font-bold text-slate-900">{toWesternDigits(data.linkedExpense.expenseNumber)}</span>
+                    </div>
+                    <div className="bg-white p-2 rounded border border-rose-100">
+                      <span className="text-slate-500 block">التصنيف المحاسبي:</span>
+                      <span className="font-bold text-slate-900">{data.linkedExpense.categoryName} ({toWesternDigits(data.linkedExpense.accountCode || '5101')})</span>
+                    </div>
+                    <div className="bg-white p-2 rounded border border-rose-100">
+                      <span className="text-slate-500 block">المبلغ المنصرف:</span>
+                      <span className="font-mono font-bold text-rose-700">{formatMoney(data.linkedExpense.amount)} ر.ي</span>
+                    </div>
+                    <div className="bg-white p-2 rounded border border-rose-100">
+                      <span className="text-slate-500 block">طريقة الصرف / الخزينة:</span>
+                      <span className="font-bold text-slate-900 truncate block">
+                        {data.linkedExpense.cashBoxName || (data.linkedExpense.paymentMethod === 'CASH' ? 'صندوق نقدي' : 'بنكي')}
+                      </span>
+                    </div>
+                  </div>
+                  {(data.linkedExpense.vendorName || data.linkedExpense.maintenanceNumber) && (
+                    <div className="grid grid-cols-2 gap-2 text-xs pt-1">
+                      {data.linkedExpense.vendorName && (
+                        <div className="bg-white p-2 rounded border border-rose-100">
+                          <span className="text-slate-500 block">المورد / الفني المستفيد:</span>
+                          <span className="font-bold text-slate-800">{data.linkedExpense.vendorName}</span>
+                        </div>
+                      )}
+                      {data.linkedExpense.maintenanceNumber && (
+                        <div className="bg-white p-2 rounded border border-rose-100">
+                          <span className="text-slate-500 block">رقم طلب الصيانة المرتبط:</span>
+                          <span className="font-mono font-bold text-slate-800">{toWesternDigits(data.linkedExpense.maintenanceNumber)}</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
 

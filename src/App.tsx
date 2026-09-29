@@ -43,6 +43,8 @@ import { WaterCostManagementModule } from './components/modules/water/WaterCostM
 import { ElectricityModule } from './components/modules/electricity/ElectricityModule';
 import { CollectionsModule } from './components/modules/collections/CollectionsModule';
 import { StatementsModule } from './components/modules/statements/StatementsModule';
+import { ExpensesModule } from './components/modules/ExpensesModule';
+import { ReportsModule } from './components/modules/reports/ReportsModule';
 
 import { 
   CURRENT_USER, 
@@ -333,6 +335,20 @@ export default function App() {
             <StatementsModule 
               onNavigateToTenant={(tenantId) => setActiveTab('tenants')}
               onNavigateToProperty={(propertyId) => setActiveTab('properties')}
+              onRefreshGlobalStats={loadDatabaseData}
+            />
+          ) : activeTab === 'expenses' ? (
+            <ExpensesModule 
+              onNavigateToTenant={(tenantId) => setActiveTab('tenants')}
+              onNavigateToProperty={(propertyId) => setActiveTab('properties')}
+              onRefreshGlobalStats={loadDatabaseData}
+            />
+          ) : activeTab === 'reports' ? (
+            <ReportsModule
+              onNavigateToTenant={(tenantId) => setActiveTab('tenants')}
+              onNavigateToProperty={(propertyId) => setActiveTab('properties')}
+              onNavigateToUnit={(unitId) => setActiveTab('units')}
+              onNavigateToContract={(contractId) => setActiveTab('contracts')}
               onRefreshGlobalStats={loadDatabaseData}
             />
           ) : activeTab === 'dashboard' ? (

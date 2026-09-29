@@ -1048,7 +1048,177 @@ export async function initDatabaseSchema() {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
   `);
 
-  // Seed default Super Admin user if not exists
+  // Ensure tenant_ledger can accept NULL tenant_id for company/property expenses
+  await p.query(`
+    ALTER TABLE tenant_ledger MODIFY tenant_id VARCHAR(50) NULL;
+  `).catch(() => {});
+
+  // 15. Expense Categories Master Data
+  await p.query(`
+    CREATE TABLE IF NOT EXISTS expense_categories (
+      id VARCHAR(50) PRIMARY KEY,
+      code VARCHAR(50) UNIQUE NOT NULL,
+      name VARCHAR(150) NOT NULL,
+      account_code VARCHAR(20) NOT NULL DEFAULT '5101',
+      description VARCHAR(255) NULL,
+      is_active BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_cat_code (code),
+      INDEX idx_cat_active (is_active)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+  `);
+
+  // 16. Vendors & Maintenance Technicians Master Data
+  await p.query(`
+    CREATE TABLE IF NOT EXISTS vendors (
+      id VARCHAR(50) PRIMARY KEY,
+      code VARCHAR(50) UNIQUE NOT NULL,
+      name VARCHAR(150) NOT NULL,
+      type VARCHAR(50) NOT NULL DEFAULT 'TECHNICIAN',
+      phone VARCHAR(50) NULL,
+      address VARCHAR(255) NULL,
+      tax_id VARCHAR(50) NULL,
+      notes TEXT NULL,
+      is_active BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_vnd_code (code),
+      INDEX idx_vnd_type (type),
+      INDEX idx_vnd_active (is_active)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+  `);
+
+  // 17. Maintenance Requests
+  await p.query(`
+    CREATE TABLE IF NOT EXISTS maintenance_requests (
+      id VARCHAR(50) PRIMARY KEY,
+      maintenance_number VARCHAR(50) UNIQUE NOT NULL,
+      request_date DATE NOT NULL,
+      property_id VARCHAR(50) NULL,
+      property_name VARCHAR(150) NULL,
+      building_id VARCHAR(50) NULL,
+      building_name VARCHAR(150) NULL,
+      unit_id VARCHAR(50) NULL,
+      unit_number VARCHAR(50) NULL,
+      tenant_id VARCHAR(50) NULL,
+      tenant_name VARCHAR(150) NULL,
+      category_id VARCHAR(50) NULL,
+      category_name VARCHAR(150) NULL,
+      requester_name VARCHAR(150) NOT NULL,
+      requester_phone VARCHAR(50) NULL,
+      problem_description TEXT NOT NULL,
+      priority VARCHAR(20) NOT NULL DEFAULT 'MEDIUM',
+      vendor_id VARCHAR(50) NULL,
+      vendor_name VARCHAR(150) NULL,
+      assigned_to VARCHAR(150) NULL,
+      expected_cost DECIMAL(18,2) NOT NULL DEFAULT 0.00,
+      actual_cost DECIMAL(18,2) NOT NULL DEFAULT 0.00,
+      start_date DATE NULL,
+      completion_date DATE NULL,
+      status VARCHAR(30) NOT NULL DEFAULT 'NEW',
+      notes TEXT NULL,
+      attachments JSON NULL,
+      expense_id VARCHAR(50) NULL,
+      created_by VARCHAR(50) NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      INDEX idx_mnt_num (maintenance_number),
+      INDEX idx_mnt_date (request_date),
+      INDEX idx_mnt_prop (property_id),
+      INDEX idx_mnt_unit (unit_id),
+      INDEX idx_mnt_status (status),
+      INDEX idx_mnt_vendor (vendor_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+  `);
+
+  // 18. Expenses Table
+  await p.query(`
+    CREATE TABLE IF NOT EXISTS expenses (
+      id VARCHAR(50) PRIMARY KEY,
+      expense_number VARCHAR(50) UNIQUE NOT NULL,
+      expense_date DATE NOT NULL,
+      category_id VARCHAR(50) NOT NULL,
+      category_name VARCHAR(150) NOT NULL,
+      account_code VARCHAR(20) NOT NULL DEFAULT '5101',
+      description TEXT NOT NULL,
+      amount DECIMAL(18,2) NOT NULL DEFAULT 0.00,
+      currency VARCHAR(10) NOT NULL DEFAULT 'YER',
+      payment_method VARCHAR(30) NOT NULL DEFAULT 'CASH',
+      cash_box_id VARCHAR(50) NULL,
+      cash_box_name VARCHAR(150) NULL,
+      bank_name VARCHAR(150) NULL,
+      check_number VARCHAR(100) NULL,
+      transfer_reference VARCHAR(100) NULL,
+      property_id VARCHAR(50) NULL,
+      property_name VARCHAR(150) NULL,
+      building_id VARCHAR(50) NULL,
+      building_name VARCHAR(150) NULL,
+      unit_id VARCHAR(50) NULL,
+      unit_number VARCHAR(50) NULL,
+      maintenance_id VARCHAR(50) NULL,
+      vendor_id VARCHAR(50) NULL,
+      vendor_name VARCHAR(150) NULL,
+      status VARCHAR(30) NOT NULL DEFAULT 'DRAFT',
+      approved_by VARCHAR(100) NULL,
+      approved_at DATETIME NULL,
+      posted_by VARCHAR(100) NULL,
+      posted_at DATETIME NULL,
+      ledger_id VARCHAR(50) NULL,
+      cancelled_by VARCHAR(100) NULL,
+      cancelled_at DATETIME NULL,
+      cancellation_reason TEXT NULL,
+      reversed_by VARCHAR(100) NULL,
+      reversed_at DATETIME NULL,
+      reversal_reason TEXT NULL,
+      reversal_expense_id VARCHAR(50) NULL,
+      reversal_ledger_id VARCHAR(50) NULL,
+      attachments JSON NULL,
+      notes TEXT NULL,
+      created_by VARCHAR(100) NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      INDEX idx_exp_num (expense_number),
+      INDEX idx_exp_date (expense_date),
+      INDEX idx_exp_prop (property_id),
+      INDEX idx_exp_unit (unit_id),
+      INDEX idx_exp_cat (category_id),
+      INDEX idx_exp_status (status),
+      INDEX idx_exp_vendor (vendor_id),
+      INDEX idx_exp_box (cash_box_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+  `);
+
+  // Seed Default Expense Categories if empty
+  const [catRows]: any = await p.query('SELECT COUNT(*) AS cnt FROM expense_categories').catch(() => [[{ cnt: 0 }]]);
+  if (!catRows || Number(catRows[0]?.cnt || 0) === 0) {
+    await p.query(`
+      INSERT INTO expense_categories (id, code, name, account_code, description, is_active) VALUES
+      ('cat-01', 'CAT-MAINT', 'صيانة وإصلاحات', '5101', 'أعمال صيانة المباني والمرافق والترميمات والإصلاحات الدورية', TRUE),
+      ('cat-02', 'CAT-ELEC', 'كهرباء وإنارة', '5102', 'فواتير واستهلاك الكهرباء المشتركة والسلالم والإنارة والمولدات', TRUE),
+      ('cat-03', 'CAT-WATER', 'مياه وصرف صحي', '5102', 'تكاليف شبكة المياه ووايتات الطوارئ وصيانة الخزانات والصرف', TRUE),
+      ('cat-04', 'CAT-CLEAN', 'نظافة وخدمات بيئية', '5103', 'أجور عمال النظافة وأدوات ومواد التنظيف الدورية', TRUE),
+      ('cat-05', 'CAT-SEC', 'حراسة وأمن وسلامة', '5103', 'أجور خدمات الأمن والحراسة وصيانة كاميرات المراقبة وأجهزة الإنذار', TRUE),
+      ('cat-06', 'CAT-SUPPLY', 'مواد ومستلزمات تشغيلية', '5104', 'شراء قطع غيار وأدوات سباكة وكهرباء ودهانات ومستلزمات', TRUE),
+      ('cat-07', 'CAT-RENT', 'إيجارات ومواقع', '5105', 'إيجارات مقرات الإدارة ومواقع الخدمات المساندة', TRUE),
+      ('cat-08', 'CAT-TRANS', 'نقل وشحن ومواصلات', '5105', 'تكاليف نقل المواد والمشاوير والمهمات الميدانية', TRUE),
+      ('cat-09', 'CAT-WAGES', 'رواتب وأجور إدارية', '5105', 'مكافآت وأجور الإشراف الإداري والمحاسبي والتشغيلي', TRUE),
+      ('cat-10', 'CAT-GOV', 'رسوم حكومية وتراخيص', '5105', 'رسوم البلدية والواجبات والتراخيص القانونية والمكتبية', TRUE),
+      ('cat-11', 'CAT-OTHER', 'مصروفات تشغيلية أخرى', '5105', 'أي مصروفات تشغيلية نثرية أخرى غير مصنفة أعلاه', TRUE)
+    `).catch(() => {});
+  }
+
+  // Seed Default Vendors if empty
+  const [vndRows]: any = await p.query('SELECT COUNT(*) AS cnt FROM vendors').catch(() => [[{ cnt: 0 }]]);
+  if (!vndRows || Number(vndRows[0]?.cnt || 0) === 0) {
+    await p.query(`
+      INSERT INTO vendors (id, code, name, type, phone, address, tax_id, notes, is_active) VALUES
+      ('vnd-01', 'VND-001', 'مؤسسة النجم للسباكة ومضخات المياه', 'CONTRACTOR', '+967 771 223 344', 'صنعاء - شارع الزبيري', 'TAX-88412', 'متخصصون في توريد وصيانة مضخات المياه الإيطالية وشبكات الأنابيب', TRUE),
+      ('vnd-02', 'VND-002', 'المهندس خلدون للكهرباء والتبريد', 'TECHNICIAN', '+967 773 445 566', 'صنعاء - حدة', NULL, 'فني تكييف ولوحات كهرباء معتمدة', TRUE),
+      ('vnd-03', 'VND-003', 'شركة الرائد للمقاولات والترميم', 'MAINTENANCE_COMPANY', '+967 775 667 788', 'صنعاء - الدائري', 'TAX-99210', 'أعمال العوازل والترميمات والدهانات الإنشائية', TRUE),
+      ('vnd-04', 'VND-004', 'مؤسسة الأمل لمواد البناء والأدوات', 'SUPPLIER', '+967 777 889 900', 'صنعاء - شارع تعز', 'TAX-77145', 'توريد مواد الكهرباء والسباكة والدهانات بالجملة', TRUE)
+    `).catch(() => {});
+  }
+
+  // Seed Default super admin user if not exists
   await p.query(`
     INSERT IGNORE INTO users (id, name, email, phone, role)
     VALUES ('usr-1', 'م. أحمد الوهاس', 'al.wahaas2023@gmail.com', '+967 777 000 000', 'SUPER_ADMIN')

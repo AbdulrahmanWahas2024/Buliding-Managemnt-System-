@@ -13,6 +13,53 @@ import {
 export async function seedDatabaseIfEmpty() {
   const pool = await getPool();
 
+  // Check if maintenance requests table is empty and seed initial operational records
+  const [mntCountRows]: any = await pool.query('SELECT COUNT(*) AS cnt FROM maintenance_requests').catch(() => [[{ cnt: 0 }]]);
+  if (mntCountRows[0]?.cnt === 0) {
+    // 1. Maintenance request 1 (Completed with linked expense)
+    await pool.query(
+      `INSERT INTO maintenance_requests 
+      (id, maintenance_number, request_date, property_id, property_name, building_id, building_name, unit_id, unit_number, category_id, category_name, requester_name, requester_phone, problem_description, priority, vendor_id, vendor_name, expected_cost, actual_cost, start_date, completion_date, status, notes, expense_id, created_by)
+      VALUES 
+      ('mnt-01', 'MNT-2026-000001', '2026-08-15', 'prop-01', 'عمارة الأمل السكنية', 'bld-prop-01', 'المبنى الرئيسي - عمارة الأمل', 'unit-02', '102', 'cat-01', 'صيانة وإصلاحات', 'م. فؤاد المعلمي', '771234567', 'تسريب مياه في خط التغذية الرئيسي للحمام مع تلف محبس الأمان وضغط المضخة', 'HIGH', 'vnd-01', 'مؤسسة النجم للسباكة ومضخات المياه', 30000.00, 26500.00, '2026-08-15', '2026-08-16', 'COMPLETED', 'تم استبدال المحبس الإيطالي وتثبيت الأنابيب بنجاح والتجربة ممتازة', 'exp-01', 'م. أحمد الوهاس')`
+    );
+
+    // 2. Maintenance request 2 (In progress, urgent)
+    await pool.query(
+      `INSERT INTO maintenance_requests 
+      (id, maintenance_number, request_date, property_id, property_name, building_id, building_name, unit_id, unit_number, category_id, category_name, requester_name, requester_phone, problem_description, priority, vendor_id, vendor_name, expected_cost, actual_cost, start_date, completion_date, status, notes, expense_id, created_by)
+      VALUES 
+      ('mnt-02', 'MNT-2026-000002', '2026-08-26', 'prop-02', 'برج الصالح التجاري', 'bld-prop-02', 'المبنى الرئيسي - برج الصالح', NULL, NULL, 'cat-02', 'كهرباء وإنارة', 'حارس المجمع / نجيب', '777654321', 'فصل متكرر في القاطع الكهربائي الرئيسي للسلالم ولوحة المضخات مع تصاعد حرارة', 'URGENT', 'vnd-02', 'المهندس خلدون للكهرباء والتبريد', 45000.00, 0.00, '2026-08-27', NULL, 'IN_PROGRESS', 'جاري فحص الأحمال والكابلات وتوريد قاطع 100 أمبير أصلي', NULL, 'م. أحمد الوهاس')`
+    );
+
+    // 3. Sample Posted Expense (Linked to mnt-01)
+    await pool.query(
+      `INSERT INTO expenses 
+      (id, expense_number, expense_date, category_id, category_name, account_code, description, amount, currency, payment_method, cash_box_id, cash_box_name, property_id, property_name, building_id, building_name, unit_id, unit_number, maintenance_id, vendor_id, vendor_name, status, approved_by, approved_at, posted_by, posted_at, ledger_id, created_by)
+      VALUES 
+      ('exp-01', 'EXP-2026-000001', '2026-08-16', 'cat-01', 'صيانة وإصلاحات', '5101', 'صرف تكلفة صيانة شبكة السباكة وتغيير محابس وحدة 102 - عمارة الأمل (MNT-2026-000001)', 26500.00, 'YER', 'CASH', 'cb-01', 'صندوق الإدارة الرئيسي', 'prop-01', 'عمارة الأمل السكنية', 'bld-prop-01', 'المبنى الرئيسي - عمارة الأمل', 'unit-02', '102', 'mnt-01', 'vnd-01', 'مؤسسة النجم للسباكة ومضخات المياه', 'POSTED', 'م. أحمد الوهاس', '2026-08-16 11:00:00', 'م. أحمد الوهاس', '2026-08-16 11:30:00', 'ledg-exp-01', 'م. أحمد الوهاس')`
+    );
+
+    // Update cash box balance for exp-01
+    await pool.query('UPDATE cash_boxes SET current_balance = current_balance - 26500.00 WHERE id = "cb-01"').catch(() => {});
+
+    // General ledger entry for exp-01
+    await pool.query(
+      `INSERT IGNORE INTO tenant_ledger 
+      (id, tenant_id, date, reference, account_type, debit, credit, balance_after, description, user_id, property_id, property_name, unit_id, unit_number, source_module, status)
+      VALUES 
+      ('ledg-exp-01', NULL, '2026-08-16', 'EXP-2026-000001', 'EXPENSE', 26500.00, 0.00, 0.00, 'صرف مصروف صيانة وإصلاحات شبكة سباكة وحدة 102 - عمارة الأمل', 'usr-1', 'prop-01', 'عمارة الأمل السكنية', 'unit-02', '102', 'EXPENSES', 'POSTED')`
+    ).catch(() => {});
+
+    // 4. Sample Approved Expense (Monthly cleaning services for prop-03)
+    await pool.query(
+      `INSERT INTO expenses 
+      (id, expense_number, expense_date, category_id, category_name, account_code, description, amount, currency, payment_method, cash_box_id, cash_box_name, property_id, property_name, building_id, building_name, unit_id, unit_number, maintenance_id, vendor_id, vendor_name, status, approved_by, approved_at, created_by)
+      VALUES 
+      ('exp-02', 'EXP-2026-000002', '2026-08-25', 'cat-04', 'نظافة وخدمات بيئية', '5103', 'مستحقات عمال النظافة وأدوات التعقيم والتنظيف الشامل لشهر أغسطس - مجمع النور', 35000.00, 'YER', 'CASH', 'cb-01', 'صندوق الإدارة الرئيسي', 'prop-03', 'مجمع النور السكني التجاري', NULL, NULL, NULL, NULL, NULL, NULL, 'عمال النظافة الميدانيين', 'APPROVED', 'م. أحمد الوهاس', '2026-08-25 14:00:00', 'م. أحمد الوهاس')`
+    );
+  }
+
   // Check if properties table is empty
   const [rows]: any = await pool.query('SELECT COUNT(*) as count FROM properties');
   if (rows[0].count > 0) {

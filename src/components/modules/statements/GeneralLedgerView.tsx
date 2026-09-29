@@ -83,7 +83,9 @@ export const GeneralLedgerView: React.FC<GeneralLedgerViewProps> = ({
       e.reference,
       e.accountType === 'RENT' ? 'إيجار' :
       e.accountType === 'ELECTRICITY' ? 'كهرباء' :
-      e.accountType === 'WATER' ? 'مياه' : e.accountType,
+      e.accountType === 'WATER' ? 'مياه' :
+      e.accountType === 'EXPENSE' ? 'مصروفات' :
+      e.accountType === 'DEPOSIT' ? 'تأمين' : e.accountType,
       e.sourceModule,
       e.description,
       e.debit,
@@ -145,6 +147,8 @@ export const GeneralLedgerView: React.FC<GeneralLedgerViewProps> = ({
         return <span className="px-2 py-0.5 bg-amber-100 text-amber-800 rounded text-xs font-semibold">كهرباء</span>;
       case 'WATER':
         return <span className="px-2 py-0.5 bg-cyan-100 text-cyan-800 rounded text-xs font-semibold">مياه</span>;
+      case 'EXPENSES':
+        return <span className="px-2 py-0.5 bg-rose-100 text-rose-800 rounded text-xs font-semibold">مصروفات</span>;
       case 'REVERSAL':
         return <span className="px-2 py-0.5 bg-rose-100 text-rose-800 rounded text-xs font-semibold">عكس قيد</span>;
       case 'OPENING_BALANCE':
@@ -172,6 +176,7 @@ export const GeneralLedgerView: React.FC<GeneralLedgerViewProps> = ({
               <option value="ELECTRICITY">ذمم الكهرباء (1202)</option>
               <option value="WATER">ذمم المياه (1203)</option>
               <option value="DEPOSIT">تأمينات المستأجرين (2101)</option>
+              <option value="EXPENSE">مصروفات التشغيل والصيانة (5101)</option>
             </select>
           </div>
 
@@ -188,6 +193,7 @@ export const GeneralLedgerView: React.FC<GeneralLedgerViewProps> = ({
               <option value="RENT_BILLING">فوترة الإيجار</option>
               <option value="ELECTRICITY">فواتير الكهرباء</option>
               <option value="WATER">تكاليف المياه</option>
+              <option value="EXPENSES">سندات المصروفات والصيانة</option>
               <option value="REVERSAL">القيود المعكوسة والملغاة</option>
               <option value="OPENING_BALANCE">أرصدة افتتاحية</option>
             </select>
@@ -396,9 +402,16 @@ export const GeneralLedgerView: React.FC<GeneralLedgerViewProps> = ({
                         <span className={`px-2 py-0.5 rounded text-xs font-semibold ${
                           entry.accountType === 'RENT' ? 'bg-blue-100 text-blue-800' :
                           entry.accountType === 'ELECTRICITY' ? 'bg-amber-100 text-amber-800' :
-                          'bg-cyan-100 text-cyan-800'
+                          entry.accountType === 'WATER' ? 'bg-cyan-100 text-cyan-800' :
+                          entry.accountType === 'EXPENSE' ? 'bg-rose-100 text-rose-800' :
+                          entry.accountType === 'DEPOSIT' ? 'bg-purple-100 text-purple-800' :
+                          'bg-slate-100 text-slate-800'
                         }`}>
-                          {entry.accountType === 'RENT' ? 'إيجار' : entry.accountType === 'ELECTRICITY' ? 'كهرباء' : 'مياه'}
+                          {entry.accountType === 'RENT' ? 'إيجار' :
+                           entry.accountType === 'ELECTRICITY' ? 'كهرباء' :
+                           entry.accountType === 'WATER' ? 'مياه' :
+                           entry.accountType === 'EXPENSE' ? 'مصروفات' :
+                           entry.accountType === 'DEPOSIT' ? 'تأمين' : entry.accountType}
                         </span>
                       </td>
                       <td className="py-2.5 px-3">{getSourceBadge(entry.sourceModule)}</td>
